@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Test and package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Check dashboard and script syntax
+        run: npm run check:scripts
+
+      - name: Compile and run offline tests
+        run: npm test
+
+      - name: Build VSIX
+        run: npm run package
+
+      - name: Upload installable extension
+        uses: actions/upload-artifact@v7
+        with:
+          name: shipstats-vsix-${{ matrix.os }}
+          path: shipstats-analytics-*.vsix
+          if-no-files-found: error
+          retention-days: 14

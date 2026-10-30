@@ -1,5 +1,7 @@
 # ShipStats
 
+[![CI](https://github.com/shubhammaji1/shipstats/actions/workflows/ci.yml/badge.svg)](https://github.com/shubhammaji1/shipstats/actions/workflows/ci.yml)
+
 <img src="media/shipstats-icon.png" alt="ShipStats Signal Beacon logo: voxel beacon with connected data nodes" width="160">
 
 A VS Code extension for the things you ship. Discover public npm packages, select which to track, and see actual daily download counts with 7-, 30-, and 90-day comparisons. Add Marketplace, Open VSX, and optional Reddit counts alongside them.
@@ -118,6 +120,10 @@ Manual host checks before publishing:
 
 ## Package and publish
 
+GitHub Actions runs on every push and pull request, and can also be started manually from the **Actions → CI** page. Each Windows, Linux and macOS job uses Node.js 22, installs locked dependencies with `npm ci`, checks JavaScript syntax, compiles TypeScript, runs the offline tests and builds a VSIX. Successful jobs upload an installable VSIX artifact retained for 14 days. A failed check fails its job; other operating systems continue so their results remain visible.
+
+Live API and desktop VS Code smoke checks remain separate commands because they require network/provider access or a desktop VS Code installation. CI does not publish the extension. Push the workflow to GitHub to see its first run; local test results are not GitHub check results.
+
 ```sh
 npm ci
 npm test
@@ -126,7 +132,7 @@ npm run package
 
 The generated **`shipstats-analytics-0.3.0.vsix`** is installable locally. Production files are compiled JavaScript and local dashboard assets; development dependencies and tests are excluded. A lockfile pins the dependency tree. To distribute source, run `npm ci` before building. The local packaging command preserves relative README image links. Before public publishing, configure your repository and image URLs and remove `--no-rewrite-relative-links` so the Marketplace can resolve the README logo.
 
-`shipstats-local` is a local packaging placeholder, not a registered publishing claim. Before publishing, replace `publisher` in `package.json` with your own Marketplace publisher, set your repository/bugs/homepage URLs, review branding and provider terms, and follow Microsoft's official publishing guide. For Open VSX, use your own namespace and follow its publishing process. ShipStats does not publish anything automatically.
+`shipstats-local` is a local packaging placeholder, not a registered publishing claim. Before publishing, replace `publisher` in `package.json` with your own Marketplace publisher, verify the configured repository/bugs/homepage URLs, review branding and provider terms, and follow Microsoft's official publishing guide. For Open VSX, use your own namespace and follow its publishing process. ShipStats does not publish anything automatically.
 
 ## Source contracts and limitations
 
