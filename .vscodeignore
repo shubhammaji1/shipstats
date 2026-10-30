@@ -1,0 +1,12 @@
+.vscode/**
+src/**
+test/**
+scripts/**
+node_modules/**
+dist/test/**
+**/*.map
+tsconfig.json
+package-lock.json
+.gitignore
+*.vsix
+BRANDING.md
