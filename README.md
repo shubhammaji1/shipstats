@@ -18,9 +18,9 @@ Requires desktop VS Code **1.99+**, or a compatible current desktop build. This 
 4. In **Overview**, use **7 / 30 / 90 days** to change the npm window. Explore the combined daily chart, search products, or filter cards by source. Expand **Daily values** for exact source counts; **View source** opens the original product page. Product filters affect the cards; overview totals continue to cover all tracked npm packages with complete data.
 5. Use **Add product** for any source, or go to **Integrations** for direct Marketplace, Open VSX and Reddit add actions and Reddit access setup. **Add a package manually** on Packages opens the npm input directly. Use × on a product card to stop tracking it.
 
-This renamed build has a new extension identity: `shipstats-local.shipstats-analytics`. If you installed the earlier local prototype, disable it before installing this build, then re-enter your discovery settings, tracked products and Reddit token. VS Code isolates settings and stored data by extension identity; automatic migration from the prototype is not included.
+The Marketplace extension identity is `shubhammaji1.shipstats-analytics`. If you installed a local build published as `shipstats-local.shipstats-analytics` or the earlier prototype, disable it before installing this build, then re-enter your tracked products and Reddit token. VS Code isolates extension storage by identity; automatic migration from the local build is not included. Existing ShipStats settings may remain available.
 
-ShipStats 0.3.0 keeps the identity used by ShipStats 0.2.x, so upgrading from that version retains your tracked products and settings.
+Future upgrades under `shubhammaji1.shipstats-analytics` retain that extension's saved state.
 
 ## Dashboard layout
 
@@ -132,7 +132,7 @@ npm run package
 
 The generated **`shipstats-analytics-0.3.0.vsix`** is installable locally. Production files are compiled JavaScript and local dashboard assets; development dependencies and tests are excluded. A lockfile pins the dependency tree. To distribute source, run `npm ci` before building. The local packaging command preserves relative README image links. Before public publishing, configure your repository and image URLs and remove `--no-rewrite-relative-links` so the Marketplace can resolve the README logo.
 
-`shipstats-local` is a local packaging placeholder, not a registered publishing claim. Before publishing, replace `publisher` in `package.json` with your own Marketplace publisher, verify the configured repository/bugs/homepage URLs, review branding and provider terms, and follow Microsoft's official publishing guide. For Open VSX, use your own namespace and follow its publishing process. ShipStats does not publish anything automatically.
+The manifest publisher is `shubhammaji1`; upload the VSIX under that exact Marketplace publisher ID. Before publishing, verify the configured repository/bugs/homepage URLs, review branding and provider terms, and follow Microsoft's official publishing guide. For Open VSX, use the matching namespace and follow its publishing process. ShipStats does not publish anything automatically.
 
 ## Source contracts and limitations
 

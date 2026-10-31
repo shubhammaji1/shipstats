@@ -3,7 +3,8 @@ import * as vscode from 'vscode';
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 export async function run(): Promise<void> {
-  const extension = vscode.extensions.getExtension('shipstats-local.shipstats-analytics');
+  const manifest = require('../../package.json') as { publisher: string; name: string };
+  const extension = vscode.extensions.getExtension(`${manifest.publisher}.${manifest.name}`);
   assert.ok(extension, 'Extension is installed in development host');
   await extension.activate(); assert.equal(extension.isActive, true);
   const commands = await vscode.commands.getCommands(true);

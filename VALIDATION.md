@@ -1,5 +1,7 @@
 # ShipStats 0.3.0 verification
 
+Publisher correction: the release manifest now uses `shubhammaji1.shipstats-analytics`. The desktop host result below was recorded for the earlier local identity; the host smoke test now resolves the current identity from package.json. Saved extension storage does not automatically migrate from `shipstats-local`.
+
 Verified 30 October 2026 after the three-page dashboard redesign. Extension identity and Signal Beacon branding are retained, along with the username-switch reset fix.
 
 - TypeScript compile and all 27 offline tests pass.
