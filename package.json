@@ -2,7 +2,7 @@
   "name": "shipstats-analytics",
   "displayName": "ShipStats — Developer Analytics",
   "description": "Discover npm packages, choose what to track, and see real download trends alongside extension and Reddit counts.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "shubhammaji1",
   "license": "MIT",
   "repository": {
@@ -139,7 +139,7 @@
     "test:live": "npm run compile && node scripts/live-smoke.cjs",
     "test:host": "npm run compile && node scripts/host-smoke.cjs",
     "vscode:prepublish": "npm run check:assets && npm run compile",
-    "package": "vsce package --no-dependencies --no-rewrite-relative-links -o shipstats-analytics-0.3.0.vsix"
+    "package": "vsce package --no-dependencies -o shipstats-analytics-0.3.1.vsix"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

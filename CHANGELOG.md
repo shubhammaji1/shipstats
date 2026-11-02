@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- Fix the README logo on Marketplace and Open VSX by using an absolute HTTPS image URL.
+- Enable standard relative-link rewriting during VSIX packaging.
+- Keep the release icon under the 100 KB project budget.
+
 ## 0.3.0
 
 - Redesign the dashboard into Overview, Packages and Integrations with responsive navigation and Signal Beacon branding.

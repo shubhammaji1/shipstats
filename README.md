@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/shubhammaji1/shipstats/actions/workflows/ci.yml/badge.svg)](https://github.com/shubhammaji1/shipstats/actions/workflows/ci.yml)
 
-<img src="media/shipstats-icon.png" alt="ShipStats Signal Beacon logo: voxel beacon with connected data nodes" width="160">
+<img src="https://raw.githubusercontent.com/shubhammaji1/shipstats/main/media/shipstats-icon.png" alt="ShipStats Signal Beacon logo: voxel beacon with connected data nodes" width="160">
 
 A VS Code extension for the things you ship. Discover public npm packages, select which to track, and see actual daily download counts with 7-, 30-, and 90-day comparisons. Add Marketplace, Open VSX, and optional Reddit counts alongside them.
 
@@ -12,7 +12,7 @@ A VS Code extension for the things you ship. Discover public npm packages, selec
 
 Requires desktop VS Code **1.99+**, or a compatible current desktop build. This is a Node extension; vscode.dev/web is not supported.
 
-1. Install the included `shipstats-analytics-0.3.0.vsix` from **Extensions → … → Install from VSIX**. Reload if prompted.
+1. Install the included `shipstats-analytics-0.3.1.vsix` from **Extensions → … → Install from VSIX**. Reload if prompted.
 2. Click the ShipStats activity icon or run **ShipStats: Open Dashboard** from the Command Palette.
 3. Open **Packages**, enter an **npm username** or **npm scope**, and click **Find packages**. Filter results, check packages, and click **Track selected packages** to open Overview. Within the same account, clearing the discovered selection and saving stops tracking those candidates; other manually tracked packages remain. **Changing the username or scope clears all previous npm tracking, download readings and picker filters before the new search starts.** Marketplace, Open VSX and Reddit tracking remains.
 4. In **Overview**, use **7 / 30 / 90 days** to change the npm window. Explore the combined daily chart, search products, or filter cards by source. Expand **Daily values** for exact source counts; **View source** opens the original product page. Product filters affect the cards; overview totals continue to cover all tracked npm packages with complete data.
@@ -130,7 +130,7 @@ npm test
 npm run package
 ```
 
-The generated **`shipstats-analytics-0.3.0.vsix`** is installable locally. Production files are compiled JavaScript and local dashboard assets; development dependencies and tests are excluded. A lockfile pins the dependency tree. To distribute source, run `npm ci` before building. The local packaging command preserves relative README image links. Before public publishing, configure your repository and image URLs and remove `--no-rewrite-relative-links` so the Marketplace can resolve the README logo.
+The generated **`shipstats-analytics-0.3.1.vsix`** is installable locally. Production files are compiled JavaScript and local dashboard assets; development dependencies and tests are excluded. A lockfile pins the dependency tree. To distribute source, run `npm ci` before building. The README logo uses an absolute HTTPS URL so GitHub, Marketplace and Open VSX can load the same image. Packaging also enables standard relative-link rewriting. Push image changes to the public repository before uploading a new release.
 
 The manifest publisher is `shubhammaji1`; upload the VSIX under that exact Marketplace publisher ID. Before publishing, verify the configured repository/bugs/homepage URLs, review branding and provider terms, and follow Microsoft's official publishing guide. For Open VSX, use the matching namespace and follow its publishing process. ShipStats does not publish anything automatically.
 
