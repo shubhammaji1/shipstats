@@ -4,7 +4,7 @@ export interface Day { day: string; downloads: number }
 export interface WindowMetric { days: 7 | 30 | 90; total: number | null; previous: number | null; change: number | null }
 export interface NpmMetric { kind: 'npm'; daily: Day[]; windows: WindowMetric[]; start: string; end: string }
 export interface CountMetric { kind: 'count'; label: string; value: number; title?: string }
-export interface Reading { product: Product; metric?: NpmMetric | CountMetric; fetchedAt?: string; error?: string; stale?: boolean }
+export interface Reading { product: Product; metric?: NpmMetric | CountMetric; fetchedAt?: string; attemptedAt?: string; cached?: boolean; error?: string; stale?: boolean }
 export interface Candidate { name: string; description: string }
 export interface Discovery { packages: Candidate[]; note: string }
 export const keyOf = (p: Product): string => `${p.source}:${p.id}`;

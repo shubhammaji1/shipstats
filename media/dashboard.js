@@ -5,14 +5,16 @@
   const app = document.getElementById('app');
   const saved = vscode.getState() || {};
   let period = [7, 30, 90].includes(saved.period) ? saved.period : 30;
-  let page = ['overview', 'packages', 'integrations'].includes(saved.page) ? saved.page : 'packages';
+  let page = ['overview', 'packages', 'integrations', 'insights', 'launch'].includes(saved.page) ? saved.page : 'packages';
   let state = { products: [], readings: [], busy: true, notice: '' };
   let selection = new Set(), signature = '', query = '', identityDirty = false, discoveryKey;
   let productQuery = '', sourceFilter = 'all', initialized = false, pendingSelection = false;
+  let selectedGroupId = typeof saved.groupId === 'string' ? saved.groupId : '';
+  let insightSignature = '', groupEditorId = '', markerEditorId = '', pendingGroupSave = false, pendingMarkerSave = false;
   const sources = { npm: 'npm', marketplace: 'Marketplace', openvsx: 'Open VSX', reddit: 'Reddit' };
   const fmt = value => value == null ? 'Unavailable' : new Intl.NumberFormat().format(value);
   const send = (type, data = {}) => vscode.postMessage({ type, ...data });
-  const persist = () => vscode.setState({ period, page });
+  const persist = () => vscode.setState({ period, page, groupId: selectedGroupId });
   const keyOf = p => `${p.source}:${p.id}`;
   const defaultCaveat = 'Public search can miss packages and does not verify ownership. Private packages are excluded. You can add a known package by name.';
   function node(tag, text, className) {
@@ -52,7 +54,7 @@
   sidebar.append(node('div', 'YOUR DASHBOARD', 'nav-label'));
   const nav = node('nav'); nav.setAttribute('aria-label', 'Dashboard navigation');
   const navButtons = {};
-  for (const [name, title, glyph] of [['overview', 'Overview', '▦'], ['packages', 'Packages', '◇'], ['integrations', 'Integrations', '⌘']]) {
+  for (const [name, title, glyph] of [['overview', 'Overview', '▦'], ['packages', 'Packages', '◇'], ['integrations', 'Integrations', '⌘'], ['insights', 'Insights', '+'], ['launch', 'Launch Review', '*']]) {
     const b = button('', () => setPage(name), 'nav-button');
     const icon = node('span', glyph, 'nav-icon'); icon.setAttribute('aria-hidden', 'true');
     b.append(icon, node('span', title)); b.setAttribute('aria-controls', `view-${name}`); navButtons[name] = b; nav.append(b);
@@ -75,7 +77,9 @@
   const actions = node('div', undefined, 'actions');
   const settings = button('Settings', () => send('settings'), 'ghost');
   const refresh = button('↻  Refresh', () => send('refresh'), 'ghost');
-  const add = button('+ Add product', () => send('add'), 'primary'); actions.append(settings, refresh, add); topbar.append(trail, actions); workspace.append(topbar);
+  const exportCsv = button('Export CSV', () => send('export'), 'ghost');
+  exportCsv.title = 'Export saved observations for all tracked products';
+  const add = button('+ Add product', () => send('add'), 'primary'); actions.append(settings, refresh, exportCsv, add); topbar.append(trail, actions); workspace.append(topbar);
   const statusLine = node('div', undefined, 'status-line');
   const account = button('No npm account selected', () => setPage('packages'), 'account-chip');
   const status = node('span', 'Loading', 'status-chip');
@@ -83,7 +87,7 @@
   statusLine.append(account, status, notice); workspace.append(statusLine);
   const content = node('div', undefined, 'content');
   const views = {};
-  for (const name of ['overview', 'packages', 'integrations']) { const view = node('section', undefined, `view view-${name}`); view.id = `view-${name}`; view.setAttribute('aria-label', `${name} view`); views[name] = view; content.append(view); }
+  for (const name of ['overview', 'packages', 'integrations', 'insights', 'launch']) { const view = node('section', undefined, `view view-${name}`); view.id = `view-${name}`; view.setAttribute('aria-label', `${name} view`); views[name] = view; content.append(view); }
   workspace.append(content); app.append(workspace);
 
   // Overview: trustworthy totals, daily activity, then searchable product cards.
@@ -98,6 +102,11 @@
   const productTitle = node('div'); productTitle.append(node('h2', 'Your products'), node('p', 'The metrics behind the things you make.', 'muted'));
   const shownCount = node('span', '', 'count-badge'); productHeading.append(productTitle, shownCount); views.overview.append(productHeading);
   const productToolbar = node('div', undefined, 'product-toolbar');
+  const groupFilterLabel = node('label', 'Product group', 'group-filter');
+  const groupFilter = node('select'); groupFilter.setAttribute('aria-label', 'Product group filter');
+  groupFilter.addEventListener('change', () => { selectedGroupId = groupFilter.value; persist(); renderAnalytics(); });
+  groupFilterLabel.append(groupFilter); views.overview.append(groupFilterLabel);
+  const groupScope = node('p', '', 'fine group-scope'); views.overview.append(groupScope);
   const sourceFilters = node('div', undefined, 'source-filters'); sourceFilters.setAttribute('role', 'group'); sourceFilters.setAttribute('aria-label', 'Filter tracked products by source');
   for (const [value, label] of [['all', 'All products'], ...Object.entries(sources)]) {
     const b = button(label, () => { sourceFilter = value; renderAnalytics(); }, 'filter-chip'); b.dataset.source = value; sourceFilters.append(b);
@@ -105,6 +114,7 @@
   const productSearch = node('input'); productSearch.type = 'search'; productSearch.placeholder = 'Search products…'; productSearch.setAttribute('aria-label', 'Search tracked products');
   productSearch.addEventListener('input', () => { productQuery = productSearch.value; renderAnalytics(); }); productToolbar.append(sourceFilters, productSearch); views.overview.append(productToolbar);
   const cards = node('div', undefined, 'cards'); views.overview.append(cards);
+  const historyNote = node('p', 'Saved observations are captured on successful refreshes while VS Code is running. Scheduled refreshes require an open, visible dashboard. Cache hits add no observations. Keep up to 100 per product for 90 days. Removing a product or switching npm identity clears the affected history. Export CSV includes all tracked products, regardless of filters.', 'history-note fine'); views.overview.append(historyNote);
   const dataNote = node('div', undefined, 'data-note'); dataNote.append(node('span', 'ⓘ', 'info-symbol'), node('p', 'npm uses complete UTC days ending yesterday. Growth compares the previous equal-length period. Missing values stay unavailable; counts are not unique people.', 'fine')); views.overview.append(dataNote);
 
   // Packages: one clear path from identity to an explicit saved selection.
@@ -162,8 +172,314 @@
   for (const text of ['Set a descriptive app/version and Reddit username in shipstats.redditUserAgent.', 'Save a valid OAuth access token using the secure token command below.', 'Add a post URL to track its current comment count. Replace the token when it expires.']) redditSteps.append(node('li', text));
   reddit.append(redditSteps, button('Set access token', () => send('token'), 'primary'), button('Clear access token', () => send('clearToken'), 'ghost'));
   reddit.append(node('p', 'The token stays in VS Code SecretStorage. ShipStats reads comment counts only, with no scraping fallback, automatic login, or new-comment notifications.', 'fine')); views.integrations.append(reddit);
-  const limitations = node('div', undefined, 'data-note'); limitations.append(node('span', 'ⓘ', 'info-symbol'), node('p', 'Each source keeps its own meaning. Marketplace installs, Open VSX downloads and Reddit comments are separate from npm downloads; historical trends are available only for npm.', 'fine')); views.integrations.append(limitations);
+  const limitations = node('div', undefined, 'data-note'); limitations.append(node('span', 'ⓘ', 'info-symbol'), node('p', 'Each source keeps its own meaning. npm supplies daily history. Marketplace installs, Open VSX downloads and Reddit comments have local observations from successful fetches only; gaps are not filled or backdated.', 'fine')); views.integrations.append(limitations);
   const footer = node('footer'); footer.append(node('span', 'ShipStats', 'footer-brand'), node('span', 'Local storage · No ShipStats telemetry · 10-minute source cache', 'fine')); workspace.append(footer);
+
+  // Insights editors stay mounted so host messages do not erase a draft.
+  views.insights.append(pageHeading('Understand what changed.', 'Group related products, mark releases and compare two date ranges.', 'PRODUCT INSIGHTS'));
+  const insightGrid = node('div', undefined, 'insight-editors'); views.insights.append(insightGrid);
+  const groupPanel = node('section', undefined, 'panel insight-editor'); groupPanel.append(node('h2', 'Product groups'), node('p', 'A product can belong to several groups. Group totals combine npm downloads only.', 'fine'));
+  const markerPanel = node('section', undefined, 'panel insight-editor'); markerPanel.append(node('h2', 'Release markers'), node('p', 'Add a release date manually. Markers show timing, not proof of impact.', 'fine'));
+  insightGrid.append(groupPanel, markerPanel);
+  function field(parent, title, control) { const label = node('label', title); control.setAttribute('aria-label', title); label.append(control); parent.append(label); return control; }
+  function options(select, items, selected) { select.replaceChildren(); for (const [value, title] of items) { const option = node('option', title); option.value = value; select.append(option); } select.value = items.some(([value]) => value === selected) ? selected : items[0]?.[0] || ''; }
+  const groupForm = node('form', undefined, 'insight-form'); groupPanel.append(groupForm);
+  const groupEditor = field(groupForm, 'Edit product group', node('select'));
+  const groupName = field(groupForm, 'Group name', node('input')); groupName.required = true; groupName.maxLength = 60;
+  const groupMembers = node('fieldset', undefined, 'group-members'); groupMembers.append(node('legend', 'Tracked products in this group')); groupForm.append(groupMembers);
+  const groupActions = node('div', undefined, 'insight-actions');
+  const groupSave = node('button', 'Save group', 'primary'); groupSave.type = 'submit';
+  const groupDelete = button('Delete group', () => send('groupDelete', { id: groupEditorId }), 'ghost');
+  groupActions.append(groupSave, groupDelete); groupForm.append(groupActions);
+  let draftMembers = new Set();
+  function renderMembers() {
+    groupMembers.replaceChildren(node('legend', 'Tracked products in this group'));
+    if (!state.products.length) groupMembers.append(node('p', 'Track a product first, or save an empty group for later.', 'fine'));
+    for (const p of state.products) {
+      const row = node('label'), input = node('input'); input.type = 'checkbox'; input.value = keyOf(p); input.checked = draftMembers.has(input.value); input.disabled = state.busy;
+      input.addEventListener('change', () => { if (input.checked) draftMembers.add(input.value); else draftMembers.delete(input.value); });
+      row.append(input, node('span', `${sources[p.source]} / ${p.id}`)); groupMembers.append(row);
+    }
+  }
+  function loadGroup() { const g = (state.insights?.groups || []).find(g => g.id === groupEditorId); groupName.value = g?.name || ''; draftMembers = new Set(g?.keys || []); renderMembers(); }
+  groupEditor.addEventListener('change', () => { groupEditorId = groupEditor.value; loadGroup(); groupDelete.disabled = state.busy || !groupEditorId; });
+  groupForm.addEventListener('submit', event => { event.preventDefault(); if (!state.busy) { pendingGroupSave = true; send('groupSave', { group: { ...(groupEditorId ? { id: groupEditorId } : {}), name: groupName.value, keys: [...draftMembers] } }); } });
+  const markerForm = node('form', undefined, 'insight-form'); markerPanel.append(markerForm);
+  const markerEditor = field(markerForm, 'Edit release marker', node('select'));
+  const markerProduct = field(markerForm, 'Release product', node('select')); markerProduct.required = true;
+  const markerDate = field(markerForm, 'Release date (UTC)', node('input')); markerDate.type = 'date'; markerDate.required = true; markerDate.value = new Date().toISOString().slice(0, 10);
+  const markerLabel = field(markerForm, 'Release label', node('input')); markerLabel.required = true; markerLabel.maxLength = 80; markerLabel.placeholder = 'e.g. v0.5.0';
+  const markerNotes = field(markerForm, 'Release notes (optional)', node('textarea')); markerNotes.maxLength = 500; markerNotes.rows = 3; markerNotes.placeholder = 'What changed? e.g. Fixed slow startup. Up to 500 characters.';
+  const markerActions = node('div', undefined, 'insight-actions');
+  const markerSave = node('button', 'Save release marker', 'primary'); markerSave.type = 'submit';
+  const markerDelete = button('Delete marker', () => send('markerDelete', { id: markerEditorId }), 'ghost');
+  markerActions.append(markerSave, markerDelete); markerForm.append(markerActions);
+  function loadMarker() { const m = (state.insights?.markers || []).find(m => m.id === markerEditorId); markerProduct.value = m?.key || (state.products[0] ? keyOf(state.products[0]) : ''); markerDate.value = m?.date || state.dateLimits?.today || new Date().toISOString().slice(0, 10); markerLabel.value = m?.label || ''; markerNotes.value = m?.notes || ''; }
+  markerEditor.addEventListener('change', () => { markerEditorId = markerEditor.value; loadMarker(); markerDelete.disabled = state.busy || !markerEditorId; });
+  markerForm.addEventListener('submit', event => { event.preventDefault(); if (!state.busy) { pendingMarkerSave = true; send('markerSave', { marker: { ...(markerEditorId ? { id: markerEditorId } : {}), key: markerProduct.value, date: markerDate.value, label: markerLabel.value, notes: markerNotes.value } }); } });
+  const releaseList = node('section', undefined, 'panel release-list'); releaseList.setAttribute('aria-label', 'Saved release markers'); views.insights.append(releaseList);
+  const comparisonPanel = node('section', undefined, 'panel comparison-panel'); views.insights.append(comparisonPanel);
+  comparisonPanel.append(node('h2', 'Custom comparisons'), node('p', 'Compare completed UTC days within the last 180 days. npm uses daily data. Other sources use saved observations (up to 90 days); two observations per range are required.', 'fine'));
+  const comparisonForm = node('form', undefined, 'comparison-form'); comparisonPanel.append(comparisonForm);
+  const comparisonTarget = field(comparisonForm, 'Comparison target', node('select'));
+  const dateInputs = {};
+  const dayOffset = (value, offset) => { const d = new Date(`${value}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + offset); return d.toISOString().slice(0, 10); };
+  const comparisonEnd = dayOffset(new Date().toISOString().slice(0, 10), -1);
+  for (const [key, title, value] of [['aStart', 'Range A start (UTC)', dayOffset(comparisonEnd, -6)], ['aEnd', 'Range A end (UTC)', comparisonEnd], ['bStart', 'Range B start (UTC)', dayOffset(comparisonEnd, -13)], ['bEnd', 'Range B end (UTC)', dayOffset(comparisonEnd, -7)]]) {
+    const input = field(comparisonForm, title, node('input')); input.type = 'date'; input.required = true; input.value = value; dateInputs[key] = input;
+  }
+  const compareButton = node('button', 'Compare ranges', 'primary'); compareButton.type = 'submit'; comparisonForm.append(compareButton);
+  const comparisonResult = node('div', undefined, 'comparison-result'); comparisonResult.setAttribute('aria-live', 'polite'); comparisonPanel.append(comparisonResult);
+  function comparisonRequest() { return { target: comparisonTarget.value, a: { start: dateInputs.aStart.value, end: dateInputs.aEnd.value }, b: { start: dateInputs.bStart.value, end: dateInputs.bEnd.value } }; }
+  comparisonForm.addEventListener('submit', event => { event.preventDefault(); if (!state.busy) send('compare', { request: comparisonRequest() }); });
+  comparisonForm.addEventListener('input', () => renderComparison()); comparisonTarget.addEventListener('change', () => renderComparison());
+  function renderComparison() {
+    comparisonResult.replaceChildren(); const report = state.comparison;
+    if (!report) { comparisonResult.append(node('p', 'Choose a target and two ranges, then compare. Refreshing data or changing tracked products/groups clears the previous result.', 'fine')); return; }
+    if (JSON.stringify(report.request) !== JSON.stringify(comparisonRequest())) { comparisonResult.append(node('p', 'Inputs changed. Compare again to update the result.', 'fine')); return; }
+    comparisonResult.append(node('h3', report.targetName), node('p', `A: ${report.request.a.start} to ${report.request.a.end} / B: ${report.request.b.start} to ${report.request.b.end} (UTC)`, 'fine'), node('p', `Computed ${new Date(report.computedAt).toLocaleString()}`, 'fine'));
+    if (report.npmTotals) comparisonResult.append(node('p', `npm downloads across ${report.npmTotals.products} selected package(s): A ${fmt(report.npmTotals.a)} / B ${fmt(report.npmTotals.b)}. All selected packages must have complete data.`, 'comparison-total'));
+    const wrap = node('div', undefined, 'comparison-table-wrap'), table = node('table'); table.append(node('caption', 'Source metrics remain separate. Difference is A minus B.'));
+    const head = node('thead'), header = node('tr'); for (const title of ['Product / metric', 'Range A', 'Range B', 'Difference', 'Percent change']) { const th = node('th', title); th.scope = 'col'; header.append(th); } head.append(header); table.append(head); const body = node('tbody');
+    for (const row of report.rows) {
+      const tr = node('tr'), productCell = node('td'); productCell.append(node('strong', row.product.id), node('small', `${sources[row.product.source]} / ${row.metric}`)); tr.append(productCell);
+      for (const value of [row.a, row.b]) { const td = node('td'); td.append(node('strong', fmt(value.value)), node('small', value.coverage)); if (value.firstAt) td.append(node('small', `${value.firstAt} to ${value.lastAt}`)); tr.append(td); }
+      tr.append(node('td', fmt(row.difference)), node('td', row.percent == null ? 'Unavailable' : `${row.percent.toFixed(1)}%`)); body.append(tr);
+    }
+    table.append(body); wrap.append(table); comparisonResult.append(wrap);
+    const notes = node('ul', undefined, 'fine'); for (const note of report.notes) notes.append(node('li', note)); comparisonResult.append(notes);
+  }
+  function renderInsights() {
+    const groups = state.insights?.groups || [], markers = state.insights?.markers || [];
+    const signature = JSON.stringify([state.products, groups, markers]);
+    if (signature !== insightSignature) {
+      insightSignature = signature;
+      if (selectedGroupId && !groups.some(g => g.id === selectedGroupId)) { selectedGroupId = ''; persist(); }
+      options(groupFilter, [['', 'All tracked products'], ...groups.map(g => [g.id, g.name])], selectedGroupId);
+      options(groupEditor, [['', 'New group'], ...groups.map(g => [g.id, g.name])], groupEditorId);
+      if (groupEditorId && !groups.some(g => g.id === groupEditorId)) { groupEditorId = ''; loadGroup(); }
+      draftMembers = new Set([...draftMembers].filter(key => state.products.some(p => keyOf(p) === key))); renderMembers();
+      options(markerEditor, [['', 'New release marker'], ...markers.map(m => [m.id, `${m.date} / ${m.label} / ${m.key}`])], markerEditorId);
+      if (markerEditorId && !markers.some(m => m.id === markerEditorId)) { markerEditorId = ''; loadMarker(); }
+      options(markerProduct, state.products.map(p => [keyOf(p), `${sources[p.source]} / ${p.id}`]), markerProduct.value);
+      options(comparisonTarget, [['all', 'All tracked products'], ...groups.map(g => [`group:${g.id}`, `Group: ${g.name}`]), ...state.products.map(p => [`product:${keyOf(p)}`, `${sources[p.source]}: ${p.id}`])], comparisonTarget.value || 'all');
+      releaseList.replaceChildren(node('h2', 'Saved release markers'));
+      if (!markers.length) releaseList.append(node('p', 'No release markers yet. Add a dated label above.', 'fine'));
+      else {
+        const list = node('ul');
+        for (const m of [...markers].reverse()) {
+          const item = node('li'); item.append(node('span', `${m.date} (UTC) / ${m.label} / ${m.key}`));
+          if (m.notes) item.append(node('p', m.notes, 'release-notes fine'));
+          const remove = button('Delete release marker', () => { if (!state.busy) send('markerDelete', { id: m.id }); }, 'ghost');
+          remove.setAttribute('aria-label', `Delete release marker: ${m.label} / ${m.date} / ${m.key}`);
+          item.append(remove); list.append(item);
+        }
+        releaseList.append(list);
+      }
+    }
+    if (!state.busy && pendingGroupSave) { pendingGroupSave = false; if (state.notice === 'Product group saved.') { groupEditorId = ''; groupEditor.value = ''; loadGroup(); } }
+    if (!state.busy && pendingMarkerSave) { pendingMarkerSave = false; if (state.notice === 'Release marker saved.') { markerEditorId = ''; markerEditor.value = ''; loadMarker(); } }
+    for (const control of views.insights.querySelectorAll('input, select, textarea, button')) control.disabled = !!state.busy;
+    groupDelete.disabled = state.busy || !groupEditorId; markerDelete.disabled = state.busy || !markerEditorId;
+    markerSave.disabled = state.busy || !state.products.length; compareButton.disabled = state.busy || !state.products.length; groupFilter.disabled = !!state.busy;
+    for (const input of Object.values(dateInputs)) { input.min = state.dateLimits?.start || ''; input.max = state.dateLimits?.end || ''; }
+    markerDate.max = state.dateLimits?.today || new Date().toISOString().slice(0, 10);
+    renderComparison();
+  }
+  function markersFor(keys, start, end) { return (state.insights?.markers || []).filter(m => keys.includes(m.key) && m.date >= start && m.date <= end); }
+  function markerLegend(markers) { const details = node('details', undefined, 'release-legend'); details.append(node('summary', `Release markers (${markers.length})`)); const list = node('ul'); for (const m of markers) list.append(node('li', `${m.date} (UTC): ${m.label} / ${m.key}`)); details.append(list); return details; }
+
+  views.launch.append(pageHeading('Review your next chapter.', 'Compare a release, track milestones and export an honest progress card.', 'LAUNCH REVIEW'));
+  const alertBadge = node('span', '', 'alert-badge'); alertBadge.hidden = true; alertBadge.title = 'Unread monitoring alerts'; navButtons.launch.append(alertBadge);
+  const launchPanel = node('section', undefined, 'panel comparison-panel'); views.launch.append(launchPanel);
+  launchPanel.append(node('h2', 'Before and after a release'), node('p', 'Select a saved release and equal completed UTC windows. The release day is included in After. A report shows association, not causation.', 'fine'));
+  const launchForm = node('form', undefined, 'comparison-form launch-form'); launchPanel.append(launchForm);
+  const launchMarker = field(launchForm, 'Launch release marker', node('select')); launchMarker.required = true;
+  const launchMarkerHelp = node('p', '', 'fine'); launchMarkerHelp.id = 'launch-marker-help'; launchMarkerHelp.setAttribute('aria-live', 'polite');
+  launchMarker.setAttribute('aria-describedby', launchMarkerHelp.id);
+  let creatingLaunchMarker;
+  const addLaunchMarker = button('Add release marker', () => {
+    markerEditorId = ''; markerEditor.value = ''; loadMarker();
+    const key = launchTarget.value.startsWith('product:') ? launchTarget.value.slice(8) : '';
+    if (state.products.some(p => keyOf(p) === key)) markerProduct.value = key;
+    creatingLaunchMarker = new Set((state.insights?.markers || []).map(m => m.id)); setPage('insights'); markerLabel.focus();
+  }, 'ghost');
+  launchPanel.append(launchMarkerHelp, addLaunchMarker);
+  const launchTarget = field(launchForm, 'Launch target', node('select')); launchTarget.required = true;
+  const launchDays = field(launchForm, 'Days before and after', node('select')); options(launchDays, [7, 14, 30, 60].map(n => [String(n), `${n} days each`]), '7');
+  const launchMode = field(launchForm, 'Review mode', node('select')); options(launchMode, [['complete', 'Completed window'], ['early', 'Early review (preliminary until complete)']], 'complete');
+  const launchReadiness = node('p', '', 'launch-readiness fine'); launchReadiness.setAttribute('role', 'status'); launchPanel.append(launchReadiness);
+  const reviewButton = node('button', 'Review launch', 'primary'); reviewButton.type = 'submit'; launchForm.append(reviewButton);
+  let pendingLaunch = false;
+  function launchRequest() { return { markerId: launchMarker.value, target: launchTarget.value, days: Number(launchDays.value), ...(launchMode.value === 'early' ? { mode: 'early' } : {}) }; }
+  launchForm.addEventListener('submit', event => {
+    event.preventDefault();
+    if (!reviewButton.disabled && !state.busy && !pendingLaunch && (state.insights?.markers || []).some(m => m.id === launchMarker.value)) {
+      pendingLaunch = true; renderLaunchReport(); send('launchReview', { request: launchRequest() });
+    }
+  });
+  launchMarker.addEventListener('change', () => { const marker = (state.insights?.markers || []).find(m => m.id === launchMarker.value); if (marker) launchTarget.value = `product:${marker.key}`; renderLaunchReport(); });
+  launchForm.addEventListener('change', () => renderLaunchReport());
+  const launchResult = node('div', undefined, 'launch-result'); launchResult.setAttribute('aria-live', 'polite'); launchPanel.append(launchResult);
+  const launchExports = node('div', undefined, 'launch-exports'); launchPanel.append(launchExports);
+  const cardMetric = field(launchExports, 'Share-card metric', node('select'));
+  const reportExport = button('Export report (Markdown)', () => send('launchExport', { format: 'md' }), 'ghost');
+  const svgExport = button('Export card (SVG)', () => send('launchExport', { format: 'svg', metric: cardMetric.value }), 'ghost');
+  const pngExport = button('Export card (PNG)', () => send('launchShare', { metric: cardMetric.value }), 'primary');
+  launchExports.append(reportExport, svgExport, pngExport);
+  const cardPreview = node('figure', undefined, 'launch-card-preview'); cardPreview.hidden = true;
+  const previewCaption = node('figcaption', 'Share-card preview'); const previewImage = node('img'); previewImage.alt = 'Launch review share-card preview';
+  cardPreview.append(previewCaption); launchPanel.append(cardPreview);
+  let previewKey = '', previewId = '', previewSequence = 0;
+  function resetCardPreview() { previewKey = ''; previewId = ''; cardPreview.hidden = true; previewImage.removeAttribute('src'); previewImage.remove(); }
+  function updateCardPreview() {
+    const report = currentLaunchReport(); if (!report || pendingLaunch) { resetCardPreview(); return; }
+    const key = JSON.stringify([launchRequest(), report.comparison.computedAt, cardMetric.value]);
+    if (key === previewKey || state.busy || !cardMetric.value) return;
+    previewKey = key; previewId = String(++previewSequence); cardPreview.hidden = false; previewImage.removeAttribute('src'); previewImage.remove(); previewCaption.textContent = 'Preparing share-card preview…';
+    send('launchPreview', { requestId: previewId, metric: cardMetric.value });
+  }
+  cardMetric.addEventListener('change', updateCardPreview);
+  function currentLaunchReport() { const report = state.launchReport; return report && report.marker.id === launchMarker.value && report.days === Number(launchDays.value) && (report.mode || 'complete') === launchMode.value && report.comparison.request.target === launchTarget.value ? report : undefined; }
+  function renderLaunchReport() {
+    launchResult.replaceChildren(); const report = currentLaunchReport();
+    const marker = (state.insights?.markers || []).find(m => m.id === launchMarker.value), planned = Number(launchDays.value);
+    let ready = false;
+    if (marker) {
+      const today = state.dateLimits?.today || new Date().toISOString().slice(0, 10);
+      const completed = Math.max(0, Math.floor((Date.parse(today) - Date.parse(marker.date)) / 86400000)), elapsed = Math.min(planned, completed);
+      ready = launchMode.value === 'early' ? elapsed > 0 : completed >= planned;
+      launchReadiness.textContent = `${elapsed} of ${planned} days completed. Full review available ${dayOffset(marker.date, planned)} UTC. ` + (launchMode.value === 'early' ? elapsed ? `Early review uses ${elapsed} completed days in each window${elapsed < planned ? ' and is preliminary' : ''}.` : `Early review available ${dayOffset(marker.date, 1)} UTC, after the first day completes.` : completed < planned ? 'Select Early review to compare the days completed so far.' : 'The selected window is complete.');
+    } else launchReadiness.textContent = 'Save a release marker to see window readiness.';
+    reviewButton.textContent = pendingLaunch ? 'Reviewing launch…' : 'Review launch';
+    reviewButton.disabled = state.busy || pendingLaunch || !ready;
+    for (const control of launchExports.querySelectorAll('button, select')) control.disabled = state.busy || pendingLaunch || !report;
+    if (!report || pendingLaunch) resetCardPreview();
+    if (pendingLaunch) { launchResult.append(node('p', 'Generating your launch review…', 'fine')); return; }
+    const failure = state.launchReviewError;
+    if (failure && failure.request?.markerId === launchMarker.value && failure.request?.target === launchTarget.value && failure.request?.days === Number(launchDays.value) && (failure.request?.mode || 'complete') === launchMode.value) {
+      const error = node('p', failure.message, 'error'); error.setAttribute('role', 'alert'); launchResult.append(error); return;
+    }
+    if (!report) { launchResult.append(node('p', state.launchReport ? 'Inputs changed. Review the launch again before exporting.' : 'Choose a completed launch window and review it. Refresh or metadata changes clear the previous report.', 'fine')); return; }
+    const c = report.comparison;
+    if (report.preliminary) launchResult.append(node('p', `PRELIMINARY · ${report.actualDays} of ${report.days} planned days. Equal completed-day windows; results may change.`, 'preliminary-banner'));
+    if (report.marker.notes) launchResult.append(node('p', report.marker.notes, 'release-notes'));
+    launchResult.append(node('h3', `${c.targetName} / ${report.marker.label}`), node('p', `After: ${c.request.a.start} to ${c.request.a.end} / Before: ${c.request.b.start} to ${c.request.b.end} (UTC)`, 'fine'), node('p', `Computed ${new Date(c.computedAt).toLocaleString()}`, 'fine'));
+    if (c.npmTotals) launchResult.append(node('p', `npm downloads across ${c.npmTotals.products} package(s): After ${fmt(c.npmTotals.a)} / Before ${fmt(c.npmTotals.b)}. Complete coverage is required.`, 'comparison-total'));
+    const wrap = node('div', undefined, 'comparison-table-wrap'), table = node('table'); table.append(node('caption', 'Release comparison: source metrics stay separate. Difference is After minus Before.'));
+    const head = node('thead'), headers = node('tr'); for (const title of ['Product / metric', 'After', 'Before', 'Difference', 'Percent change']) { const th = node('th', title); th.scope = 'col'; headers.append(th); } head.append(headers); table.append(head); const body = node('tbody');
+    for (const row of c.rows) {
+      const tr = node('tr'), name = node('td'); name.append(node('strong', row.product.id), node('small', `${sources[row.product.source]} / ${row.metric}`)); tr.append(name);
+      for (const period of [row.a, row.b]) { const td = node('td'); td.append(node('strong', fmt(period.value)), node('small', period.coverage)); if (period.firstAt) td.append(node('small', `${period.firstAt} to ${period.lastAt}`)); tr.append(td); }
+      tr.append(node('td', fmt(row.difference)), node('td', row.percent === null ? 'Unavailable' : `${row.percent.toFixed(1)}%`)); body.append(tr);
+    }
+    table.append(body); wrap.append(table); launchResult.append(wrap);
+    const notes = node('ul', undefined, 'fine'); for (const note of c.notes) notes.append(node('li', note)); launchResult.append(notes);
+    options(cardMetric, [...(c.npmTotals ? [['npm-total', 'Combined npm downloads only']] : []), ...c.rows.map(row => [`product:${keyOf(row.product)}`, `${sources[row.product.source]} / ${row.product.id}`])], cardMetric.value);
+    for (const series of report.daily || []) launchResult.append(launchComparisonChart(series));
+    updateCardPreview();
+  }
+  const monitorPanel = node('section', undefined, 'panel comparison-panel'); views.launch.append(monitorPanel);
+  monitorPanel.append(node('h2', 'Milestones and alerts'), node('p', 'Rules run on fresh source fetches, not cache hits (the 10-minute source cache applies). Change alerts have a one-hour cooldown and need a positive baseline. Editing a rule resets its baseline and rearms milestones. Nothing runs while VS Code is closed.', 'fine'));
+  const ruleForm = node('form', undefined, 'comparison-form rule-form'); monitorPanel.append(ruleForm);
+  const ruleEditor = field(ruleForm, 'Edit monitoring rule', node('select'));
+  const ruleName = field(ruleForm, 'Rule name', node('input')); ruleName.required = true; ruleName.maxLength = 60;
+  const ruleProduct = field(ruleForm, 'Monitoring product', node('select')); ruleProduct.required = true;
+  const ruleMetric = field(ruleForm, 'Monitoring metric', node('select')); ruleMetric.required = true;
+  const ruleKind = field(ruleForm, 'Rule kind', node('select')); options(ruleKind, [['milestone', 'Milestone: count at least'], ['increase', 'Increase since previous fetch (%)'], ['decrease', 'Decrease since previous fetch (%)']], 'milestone');
+  const ruleThreshold = field(ruleForm, 'Threshold (count or percent)', node('input')); ruleThreshold.type = 'number'; ruleThreshold.min = '0.01'; ruleThreshold.step = 'any'; ruleThreshold.required = true; ruleThreshold.value = '1000';
+  const ruleEnabled = field(ruleForm, 'Rule enabled', node('input')); ruleEnabled.type = 'checkbox'; ruleEnabled.checked = true;
+  const ruleActions = node('div', undefined, 'insight-actions'); ruleForm.append(ruleActions);
+  const ruleSave = node('button', 'Save monitoring rule', 'primary'); ruleSave.type = 'submit';
+  let ruleEditorId = '', pendingRuleSave = false, launchSignature = '';
+  const ruleDelete = button('Delete monitoring rule', () => send('ruleDelete', { id: ruleEditorId }), 'ghost'); ruleActions.append(ruleSave, ruleDelete);
+  function monitoringMetricLabel(metric) { return metric === 'count' ? 'Source count' : `npm ${metric.slice(3)}-day rolling total`; }
+  function metricOptions(selected) { const product = state.products.find(p => keyOf(p) === ruleProduct.value); const metrics = product?.source === 'npm' ? ['npm7', 'npm30', 'npm90'] : ['count']; options(ruleMetric, metrics.map(metric => [metric, monitoringMetricLabel(metric)]), selected || (product?.source === 'npm' ? 'npm30' : 'count')); }
+  function loadRule() { const rule = (state.monitoring?.rules || []).find(r => r.id === ruleEditorId); ruleName.value = rule?.name || ''; ruleProduct.value = rule?.key || (state.products[0] ? keyOf(state.products[0]) : ''); metricOptions(rule?.metric); ruleKind.value = rule?.kind || 'milestone'; ruleThreshold.value = String(rule?.threshold ?? 1000); ruleEnabled.checked = rule?.enabled ?? true; }
+  ruleEditor.addEventListener('change', () => { ruleEditorId = ruleEditor.value; loadRule(); ruleDelete.disabled = state.busy || !ruleEditorId; });
+  ruleProduct.addEventListener('change', () => metricOptions());
+  ruleForm.addEventListener('submit', event => { event.preventDefault(); if (!state.busy) { pendingRuleSave = true; send('ruleSave', { rule: { ...(ruleEditorId ? { id: ruleEditorId } : {}), name: ruleName.value, key: ruleProduct.value, metric: ruleMetric.value, kind: ruleKind.value, threshold: Number(ruleThreshold.value), enabled: ruleEnabled.checked } }); } });
+  const ruleList = node('div', undefined, 'monitor-rules'); monitorPanel.append(ruleList);
+  const alertPanel = node('section', undefined, 'panel comparison-panel'); views.launch.append(alertPanel);
+  const alertSummary = node('h2', 'Alerts'); alertPanel.append(alertSummary);
+  const acknowledgeAll = button('Mark all alerts read', () => send('alertAck', { id: 'all' }), 'ghost'); alertPanel.append(acknowledgeAll);
+  const alertFeed = node('div', undefined, 'alerts-feed'); alertFeed.setAttribute('aria-live', 'polite'); alertPanel.append(alertFeed);
+  function renderLaunch() {
+    const groups = state.insights?.groups || [], markers = state.insights?.markers || [], rules = state.monitoring?.rules || [], alerts = state.monitoring?.alerts || [];
+    const signature = JSON.stringify([state.products, groups, markers, rules]);
+    if (signature !== launchSignature) {
+      launchSignature = signature;
+      options(launchMarker, markers.length ? markers.map(m => [m.id, `${m.date} / ${m.label} / ${m.key}`]) : [['', 'No release markers saved']], launchMarker.value);
+      const marker = markers.find(m => m.id === launchMarker.value);
+      options(launchTarget, [['all', 'All tracked products'], ...groups.map(g => [`group:${g.id}`, `Group: ${g.name}`]), ...state.products.map(p => [`product:${keyOf(p)}`, `${sources[p.source]} / ${p.id}`])], launchTarget.value || (marker ? `product:${marker.key}` : 'all'));
+      options(ruleEditor, [['', 'New monitoring rule'], ...rules.map(r => [r.id, `${r.name} / ${r.key}`])], ruleEditorId);
+      if (ruleEditorId && !rules.some(r => r.id === ruleEditorId)) { ruleEditorId = ''; loadRule(); }
+      options(ruleProduct, state.products.map(p => [keyOf(p), `${sources[p.source]} / ${p.id}`]), ruleProduct.value); metricOptions(ruleMetric.value);
+      ruleList.replaceChildren();
+      if (!rules.length) ruleList.append(node('p', 'No monitoring rules yet. Save a milestone or percent-change rule above.', 'fine'));
+      for (const rule of rules) {
+        const item = node('div', undefined, 'monitor-item');
+        item.append(node('strong', rule.name), node('p', `${rule.key} / ${monitoringMetricLabel(rule.metric)} / ${rule.kind} ${fmt(rule.threshold)}${rule.kind === 'milestone' ? '' : '%'}`, 'fine'), node('p', `${!rule.enabled ? 'Paused' : rule.reached ? 'Milestone reached' : 'Monitoring'} / Last value: ${fmt(rule.lastValue)}${rule.lastSampleAt ? ' / ' + rule.lastSampleAt : ' / Awaiting a fresh fetch'}`, 'fine'));
+        const remove = button('Delete rule', () => { if (!state.busy) send('ruleDelete', { id: rule.id }); }, 'ghost');
+        remove.setAttribute('aria-label', `Delete monitoring rule: ${rule.name}`); item.append(remove); ruleList.append(item);
+      }
+    }
+    if (creatingLaunchMarker && !state.busy && state.notice === 'Release marker saved.') {
+      const marker = markers.find(m => !creatingLaunchMarker.has(m.id));
+      if (marker) { creatingLaunchMarker = undefined; launchMarker.value = marker.id; launchTarget.value = `product:${marker.key}`; setPage('launch'); }
+    }
+    if (!state.busy && pendingRuleSave) { pendingRuleSave = false; if (state.notice?.startsWith('Monitoring rule saved.')) { ruleEditorId = ''; ruleEditor.value = ''; loadRule(); } }
+    for (const control of views.launch.querySelectorAll('input, select, button')) control.disabled = !!state.busy;
+    ruleSave.disabled = state.busy || !state.products.length; ruleDelete.disabled = state.busy || !ruleEditorId; reviewButton.disabled = state.busy || !markers.length;
+    launchMarker.disabled = state.busy || !markers.length;
+    addLaunchMarker.disabled = state.busy || !state.products.length;
+    launchMarkerHelp.textContent = !state.products.length ? 'Track a product first, then add its release date and label.' : !markers.length ? 'No release markers yet. Click Add release marker to save a product, release date and label in Insights. Releases are not imported automatically.' : 'Saved in Insights. Add another marker using its release date and label. Before/after windows must be completed before reviewing.';
+    const unread = alerts.filter(a => !a.acknowledged).length; alertBadge.textContent = String(unread); alertBadge.hidden = !unread;
+    alertSummary.textContent = `Alerts (${unread} unread)`; acknowledgeAll.disabled = state.busy || !unread;
+    alertFeed.replaceChildren();
+    if (!alerts.length) alertFeed.append(node('p', 'No triggered alerts. Up to 100 alerts are retained for 90 days. Alerts appear here only; nothing is posted or emailed.', 'fine'));
+    for (const alert of [...alerts].reverse()) {
+      const item = node('article', undefined, `monitor-item ${alert.acknowledged ? 'alert-read' : 'alert-unread'}`);
+      item.append(node('strong', alert.name), node('p', `${alert.kind} / ${alert.key} / ${monitoringMetricLabel(alert.metric)} / Value ${fmt(alert.value)} / Threshold ${fmt(alert.threshold)}${alert.kind === 'milestone' ? '' : '%'}`, 'fine'), node('p', `Triggered ${alert.createdAt}${alert.previousAt ? ' / Previous value ' + fmt(alert.previousValue) + ' at ' + alert.previousAt : ''}`, 'fine'));
+      const acknowledge = button(alert.acknowledged ? 'Read' : 'Mark alert read', () => send('alertAck', { id: alert.id }), 'ghost'); acknowledge.disabled = state.busy || alert.acknowledged; item.append(acknowledge); alertFeed.append(item);
+    }
+    renderLaunchReport();
+  }
+  function launchComparisonChart(series) {
+    const section = node('section', undefined, 'launch-comparison-chart');
+    section.append(node('h4', `Daily npm comparison / ${series.product.id}`), node('p', 'Same vertical scale in both windows. Gaps are missing data, not zero. Day 1 is the start of each window.', 'fine'));
+    const values = [...series.before, ...series.after].map(d => d.downloads).filter(n => Number.isFinite(n)), max = Math.max(1, ...values);
+    const grid = node('div', undefined, 'launch-chart-grid'); section.append(grid);
+    for (const [label, points, color] of [['Before', series.before, 'var(--vscode-charts-blue, #4472c4)'], ['After', series.after, 'var(--vscode-charts-green, #008b72)']]) {
+      const pane = node('div'); pane.append(node('strong', label), node('p', `0–${fmt(max)} downloads / day`, 'fine'));
+      const chart = svgNode('svg', { viewBox: '0 0 480 180', role: 'img', 'aria-label': `${label} daily downloads for ${series.product.id}; gaps indicate missing data` });
+      const title = svgNode('title'); title.textContent = `${label}: ${points[0]?.day || ''} to ${points.at(-1)?.day || ''}. Shared scale 0 to ${max}.`; chart.append(title);
+      for (const y of [12, 87, 162]) chart.append(svgNode('line', { x1: 12, x2: 468, y1: y, y2: y, class: 'chart-grid' }));
+      let segment = [];
+      const flush = () => { if (segment.length) chart.append(svgNode('polyline', { points: segment.join(' '), fill: 'none', stroke: color, 'stroke-width': 3 })); segment = []; };
+      points.forEach((point, i) => {
+        if (point.downloads === null) { flush(); return; }
+        const x = points.length === 1 ? 240 : 12 + i / (points.length - 1) * 456, y = 162 - point.downloads / max * 150;
+        segment.push(`${x},${y}`);
+        const dot = svgNode('circle', { cx: x, cy: y, r: 3, fill: color }); const tip = svgNode('title'); tip.textContent = `${point.day} UTC: ${fmt(point.downloads)} downloads`; dot.append(tip); chart.append(dot);
+      }); flush(); pane.append(chart, node('p', `${points[0]?.day || ''} → ${points.at(-1)?.day || ''} UTC`, 'fine')); grid.append(pane);
+    }
+    const details = node('details'), table = node('table'); details.append(node('summary', 'Compare daily values')); table.append(node('caption', `Daily download values for ${series.product.id}; dates are UTC`));
+    const head = node('thead'), tr = node('tr'); for (const label of ['Day', 'Before date', 'Downloads', 'After date', 'Downloads']) { const th = node('th', label); th.scope = 'col'; tr.append(th); } head.append(tr); table.append(head);
+    const body = node('tbody'); series.after.forEach((point, i) => { const row = node('tr'), before = series.before[i]; for (const value of [String(i + 1), before?.day || '', fmt(before?.downloads), point.day, fmt(point.downloads)]) row.append(node('td', value)); body.append(row); });
+    table.append(body); const wrap = node('div', undefined, 'comparison-table-wrap'); wrap.append(table); details.append(wrap); section.append(details); return section;
+  }
+  function renderShareCard(message) {
+    if (typeof message.svg !== 'string' || message.svg.length > 50000 || typeof message.requestId !== 'string') return;
+    const image = new Image();
+    image.onerror = () => send('shareCardError', { requestId: message.requestId });
+    image.onload = () => {
+      try { const canvas = document.createElement('canvas'); canvas.width = 1200; canvas.height = 630; const context = canvas.getContext('2d'); if (!context) throw new Error('Canvas unavailable'); context.drawImage(image, 0, 0, 1200, 630); const data = canvas.toDataURL('image/png'); if (!data.startsWith('data:image/png;base64,')) throw new Error('PNG unavailable'); send('saveShareCard', { requestId: message.requestId, data: data.slice('data:image/png;base64,'.length) }); }
+      catch { send('shareCardError', { requestId: message.requestId }); }
+    };
+    try { image.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(message.svg); }
+    catch { send('shareCardError', { requestId: message.requestId }); }
+  }
 
   function filtered() { return (state.discovery?.packages || []).filter(p => p.name.toLowerCase().includes(query.toLowerCase())); }
   function renderCandidates() {
@@ -185,7 +501,7 @@
     const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
     for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, String(value)); return el;
   }
-  function sparkline(daily, days, end, large = false) {
+  function sparkline(daily, days, end, large = false, markers = []) {
     const chart = node('div', undefined, large ? 'chart chart-large' : 'chart');
     const height = large ? 164 : 86, top = 10, bottom = height - 10;
     const svg = svgNode('svg', { viewBox: `0 0 480 ${height}`, preserveAspectRatio: 'none', role: 'img' });
@@ -205,13 +521,51 @@
       const dot = svgNode('circle', { cx: x, cy: y, r: 2.5, class: 'chart-point' }); const title = svgNode('title'); title.textContent = `${days - i - 1} day(s) before ${end}: ${fmt(value)} downloads`; dot.append(title); svg.append(dot);
     }); addSegment();
     svg.setAttribute('aria-label', `${days}-day daily downloads, up to ${fmt(max)} per day. Missing days appear as gaps. Use daily values for exact counts.`);
+    const start = dayOffset(end, -days + 1);
+    for (const marker of markers) {
+      const x = (Date.parse(marker.date) - Date.parse(start)) / 86400000 / (days - 1) * 480;
+      const line = svgNode('line', { x1: x, x2: x, y1: top, y2: bottom, class: 'release-marker' });
+      const title = svgNode('title'); title.textContent = `${marker.date}: ${marker.label} / ${marker.key}`; line.append(title); svg.append(line);
+    }
     chart.append(svg); return chart;
   }
   function dateBounds(end, days) {
     const first = new Date(`${end}T00:00:00Z`); first.setUTCDate(first.getUTCDate() - days + 1);
     const bounds = node('div', undefined, 'chart-bounds'); bounds.append(node('span', first.toISOString().slice(0, 10)), node('span', 'UTC', 'chart-unit'), node('span', end)); return { bounds, start: first.toISOString().slice(0, 10) };
   }
+  function appendHistory(card, p, reading) {
+    const observations = (state.history || []).filter(s => keyOf(s.product) === keyOf(p));
+    const latest = observations.at(-1), previous = observations.at(-2);
+    const value = s => !s ? null : s.metric.kind === 'count' ? s.metric.value : s.metric.totals[period];
+    const current = value(latest), before = value(previous);
+    let copy = 'Two successful observations are needed to show a change.';
+    if (latest && previous && current != null && before != null) {
+      const delta = current - before;
+      copy = `${delta >= 0 ? '+' : ''}${fmt(delta)} since previous successful fetch (${new Date(previous.fetchedAt).toLocaleString()}).`;
+      if (p.source === 'npm') copy += ` Change in the rolling ${period}-day total, not new downloads.`;
+      else copy += ' Observed counts may decrease.';
+    } else if (previous && (current == null || before == null)) copy = 'Change unavailable: an observation has incomplete data.';
+    const delta = node('p', copy, 'observation-change fine');
+    if (reading?.error && latest) delta.prepend(document.createTextNode('Last saved change: '));
+    card.append(delta);
+    const details = node('details', undefined, 'observation-history');
+    details.append(node('summary', `Saved observations (${observations.length})`));
+    if (!observations.length) details.append(node('p', 'No saved observations yet. A successful source fetch starts history.', 'fine'));
+    else {
+      const wrap = node('div', undefined, 'table-wrap'), table = node('table');
+      table.append(node('caption', p.source === 'npm' ? `Saved rolling ${period}-day download totals` : 'Local observations; no collection while VS Code is closed'));
+      const head = node('thead'), headers = node('tr');
+      for (const text of ['Observed (UTC)', p.source === 'npm' ? 'Data ends (UTC)' : 'Metric', 'Value']) { const th = node('th', text); th.scope = 'col'; headers.append(th); }
+      head.append(headers); table.append(head); const body = node('tbody');
+      for (const s of [...observations].reverse()) {
+        const row = node('tr'); row.append(node('td', s.fetchedAt), node('td', s.metric.kind === 'npm' ? s.metric.end : p.source === 'reddit' ? 'Comments' : p.source === 'marketplace' ? 'Installs' : 'Downloads'), node('td', fmt(value(s)))); body.append(row);
+      }
+      table.append(body); wrap.append(table); details.append(wrap);
+    }
+    card.append(details);
+  }
   function renderAnalytics() {
+    exportCsv.disabled = state.busy || !(state.history || []).length;
     for (const b of periods.children) { const active = Number(b.dataset.days) === period; b.classList.toggle('active', active); b.setAttribute('aria-pressed', String(active)); }
     for (const b of sourceFilters.children) { const active = b.dataset.source === sourceFilter; b.classList.toggle('active', active); b.setAttribute('aria-pressed', String(active)); }
     for (const source of Object.keys(sources)) {
@@ -219,15 +573,18 @@
       if (integrationCounts[source]) integrationCounts[source].textContent = `${count} tracked`;
     }
     cards.replaceChildren(); summary.replaceChildren(); activity.replaceChildren();
-    const npmProducts = state.products.filter(p => p.source === 'npm'), trackedKeys = new Set(state.products.map(keyOf));
-    const valid = state.readings.filter(r => trackedKeys.has(keyOf(r.product)) && r.metric?.kind === 'npm' && !r.error && r.metric.windows.find(w => w.days === period)?.total != null);
+    const group = (state.insights?.groups || []).find(g => g.id === selectedGroupId);
+    const scopedProducts = group ? state.products.filter(p => group.keys.includes(keyOf(p))) : state.products;
+    groupScope.textContent = group ? `Group: ${group.name}. Totals, chart and cards cover this group's products. Other sources remain separate from npm downloads.` : 'All tracked products. Text and source filters affect cards; totals cover all npm packages in this scope.';
+    const npmProducts = scopedProducts.filter(p => p.source === 'npm'), trackedKeys = new Set(scopedProducts.map(keyOf));
+    const valid = state.readings.filter(r => trackedKeys.has(keyOf(r.product)) && r.metric?.kind === 'npm' && !r.error && r.health !== 'outdated' && r.metric.windows.find(w => w.days === period)?.total != null);
     const total = valid.reduce((n, r) => n + r.metric.windows.find(w => w.days === period).total, 0);
     const heroStat = node('div', undefined, 'hero-stat panel'); heroStat.append(node('div', `NPM DOWNLOADS · LAST ${period} DAYS`, 'eyebrow'), node('strong', valid.length ? fmt(total) : '—', 'summary-total'));
     heroStat.append(node('p', npmProducts.length ? `${valid.length} of ${npmProducts.length} npm packages with complete, current data. ${valid.length !== npmProducts.length ? 'Total is partial.' : ''}` : 'Choose npm packages to start seeing download trends.', 'fine'));
     summary.append(heroStat);
-    const errors = state.readings.filter(r => trackedKeys.has(keyOf(r.product)) && r.error).length;
+    const errors = state.readings.filter(r => trackedKeys.has(keyOf(r.product)) && (r.error || ['partial', 'outdated'].includes(r.health))).length;
     for (const [label, value, caption, glyph] of [
-      ['Tracked products', state.products.length, 'Across your connected sources', '◇'],
+      ['Tracked products', scopedProducts.length, 'Across your connected sources', '◇'],
       ['Reporting packages', `${valid.length}/${npmProducts.length}`, 'Complete npm data this period', '↗'],
       ['Need attention', errors, errors ? 'Check the source message on each card' : 'No source errors reported', '◌']
     ]) { const stat = node('div', undefined, 'stat-card panel'); stat.append(node('span', glyph, 'stat-icon'), node('span', label, 'muted'), node('strong', String(value), 'stat-value'), node('small', caption, 'fine')); summary.append(stat); }
@@ -237,11 +594,13 @@
     const aligned = valid.filter(r => r.metric.end === end);
     if (aligned.length) {
       const sums = new Map(); for (const r of aligned) for (const d of r.metric.daily) sums.set(d.day, (sums.get(d.day) || 0) + d.downloads);
-      activity.append(sparkline([...sums].map(([day, downloads]) => ({ day, downloads })), period, end, true), dateBounds(end, period).bounds);
+      const bounds = dateBounds(end, period), markers = markersFor(aligned.map(r => keyOf(r.product)), bounds.start, end);
+      activity.append(sparkline([...sums].map(([day, downloads]) => ({ day, downloads })), period, end, true, markers), bounds.bounds);
+      if (markers.length) activity.append(markerLegend(markers));
       activity.append(node('p', `${aligned.length} reporting npm package${aligned.length === 1 ? '' : 's'} · Other source metrics are shown separately below.`, 'fine activity-note'));
     } else { const empty = node('div', undefined, 'chart-empty'); empty.append(node('span', '↗', 'empty-symbol'), node('strong', 'Your next chapter starts with a package.'), node('p', 'Select npm packages to bring this chart to life.', 'muted'), button('Find npm packages', () => setPage('packages'), 'ghost')); activity.append(empty); }
-    const visible = state.products.filter(p => (sourceFilter === 'all' || p.source === sourceFilter) && p.id.toLowerCase().includes(productQuery.toLowerCase()));
-    shownCount.textContent = `${visible.length} of ${state.products.length}`;
+    const visible = scopedProducts.filter(p => (sourceFilter === 'all' || p.source === sourceFilter) && p.id.toLowerCase().includes(productQuery.toLowerCase()));
+    shownCount.textContent = `${visible.length} of ${scopedProducts.length}`;
     if (!visible.length) {
       const empty = node('div', undefined, 'empty panel');
       if (state.products.length) empty.append(node('h3', 'No matching products'), node('p', 'Try another name or choose a different source.', 'muted'), button('Clear filters', () => { productQuery = ''; productSearch.value = ''; sourceFilter = 'all'; renderAnalytics(); }, 'ghost'));
@@ -254,12 +613,18 @@
       const top = node('div', undefined, 'card-top'); const source = node('span', undefined, 'product-source'); source.append(node('i', undefined, `source-dot ${p.source}`), node('span', sources[p.source]));
       const remove = button('×', () => send('remove', { key }), 'remove'); remove.setAttribute('aria-label', `Stop tracking ${p.id}`); remove.disabled = state.busy; top.append(source, remove); card.append(top, node('h3', p.id));
       if (reading?.error) { const error = node('p', reading.stale ? `Previous reading · ${reading.error}` : reading.error, 'error'); error.setAttribute('role', 'status'); card.append(error); }
+      const health = reading?.health || (reading?.error ? reading.metric ? 'stale' : 'error' : 'empty');
+      const labels = { fresh: 'Fresh source data', cached: 'Cached (10-minute limit)', outdated: 'Refresh needed', partial: 'Incomplete npm coverage', stale: 'Source failed - previous reading', error: 'Source unavailable', empty: 'Awaiting source data' };
+      card.append(node('p', labels[health] || labels.empty, `source-health health-${health}`));
+      if (reading?.attemptedAt) card.append(node('p', `Last source attempt: ${new Date(reading.attemptedAt).toLocaleString()}`, 'fine source-attempt'));
       const metric = reading?.metric;
       if (metric?.kind === 'npm') {
         const windowMetric = metric.windows.find(w => w.days === period); const change = windowMetric?.change;
         card.append(node('div', fmt(windowMetric?.total), 'metric'), node('span', `downloads · ${period} complete UTC days`, 'muted metric-label'));
         card.append(node('p', change == null ? windowMetric?.previous === 0 ? 'No growth rate: preceding period was zero.' : 'Growth unavailable: incomplete comparison data.' : `${change >= 0 ? '↗ +' : '↘ '}${change.toFixed(1)}% vs preceding ${period} days`, change == null ? 'trend muted' : change >= 0 ? 'trend positive' : 'trend negative'));
-        card.append(sparkline(metric.daily, period, metric.end)); const bounds = dateBounds(metric.end, period); card.append(bounds.bounds);
+        const bounds = dateBounds(metric.end, period), markers = markersFor([key], bounds.start, metric.end);
+        card.append(sparkline(metric.daily, period, metric.end, false, markers), bounds.bounds);
+        if (markers.length) card.append(markerLegend(markers));
         const detail = node('details', undefined, 'daily-details'); detail.append(node('summary', 'Daily values'));
         const tableWrap = node('div', undefined, 'table-wrap'), table = node('table'); table.append(node('caption', 'Source-reported daily npm downloads'));
         const head = node('thead'), headerRow = node('tr'); for (const label of ['UTC date', 'Downloads']) { const th = node('th', label); th.scope = 'col'; headerRow.append(th); } head.append(headerRow); table.append(head);
@@ -267,14 +632,25 @@
       } else if (metric?.kind === 'count') {
         if (metric.title) card.append(node('p', metric.title, 'muted'));
         card.append(node('div', fmt(metric.value), 'metric'), node('p', metric.label, 'muted metric-label'));
-        const countNote = node('div', undefined, 'count-note'); countNote.append(node('span', p.source === 'reddit' ? '◌' : '◇', 'count-note-icon'), node('span', 'No historical trend is provided for this source.', 'fine')); card.append(countNote);
+        const countNote = node('div', undefined, 'count-note'); countNote.append(node('span', p.source === 'reddit' ? '◌' : '◇', 'count-note-icon'), node('span', 'No historical trend is supplied by this source. Saved local observations start when you track it; gaps remain gaps.', 'fine')); card.append(countNote);
       } else if (!reading?.error) card.append(node('p', state.busy ? 'Loading source data…' : 'No reading yet. Refresh to load.', 'muted loading-reading'));
       const bottom = node('div', undefined, 'card-bottom');
+      appendHistory(card, p, reading);
       const freshness = node('small', reading?.fetchedAt ? `${reading.stale ? 'Last success' : 'Fetched'} ${new Date(reading.fetchedAt).toLocaleString()}` : 'No successful reading', 'muted');
       bottom.append(freshness, button('View source ↗', () => send('source', { key }), 'source-link')); card.append(bottom); cards.append(card);
     }
   }
   window.addEventListener('message', event => {
+    if (event.data?.type === 'launchPreview') {
+      const message = event.data;
+      if (message.requestId !== previewId || !currentLaunchReport() || pendingLaunch || typeof message.svg !== 'string' || message.svg.length > 50000) return;
+      previewCaption.textContent = currentLaunchReport().preliminary ? 'Preliminary share-card preview / 1200 × 630' : 'Share-card preview / 1200 × 630';
+      previewImage.onerror = () => { previewCaption.textContent = 'Preview unavailable. You can still export the SVG card.'; previewImage.remove(); };
+      try { previewImage.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(message.svg)}`; cardPreview.append(previewImage); }
+      catch { previewCaption.textContent = 'Preview unavailable. You can still export the SVG card.'; }
+      return;
+    }
+    if (event.data?.type === 'renderShareCard') { renderShareCard(event.data); return; }
     if (event.data?.type === 'navigate') {
       if (Object.hasOwn(views, event.data.page)) {
         if (event.data.page === 'overview') { sourceFilter = 'all'; productQuery = ''; productSearch.value = ''; renderAnalytics(); }
@@ -284,6 +660,7 @@
     }
     if (event.data?.type !== 'state') return;
     state = event.data;
+    if (!state.busy) pendingLaunch = false;
     if (!initialized) { initialized = true; if (!saved.page) page = state.products.length ? 'overview' : 'packages'; }
     if (discoveryKey !== state.discoveryKey) {
       discoveryKey = state.discoveryKey; query = ''; filter.value = ''; selection = new Set(); signature = '';
@@ -298,7 +675,7 @@
     app.setAttribute('aria-busy', String(state.busy)); refresh.disabled = add.disabled = search.disabled = state.busy;
     refresh.textContent = state.busy ? '↻  Syncing…' : '↻  Refresh';
     if (pendingSelection && !state.busy) { pendingSelection = false; if (!state.notice && state.products.some(p => p.source === 'npm')) { sourceFilter = 'all'; productQuery = ''; productSearch.value = ''; setPage('overview'); } }
-    renderCandidates(); renderAnalytics(); setPage(page);
+    renderCandidates(); renderInsights(); renderLaunch(); renderAnalytics(); setPage(page);
   });
   renderAnalytics(); setPage(page); send('ready');
 })();

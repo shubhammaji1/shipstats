@@ -8,11 +8,11 @@ export class Analytics {
   async read(p: Product, token?: string, userAgent = ''): Promise<Reading> {
     const key = keyOf(p), cached = this.cache.get(key), now = this.clock();
     const correctDay = cached?.metric?.kind !== 'npm' || cached.metric.end === dateAt(now, -1);
-    if (cached?.fetchedAt && correctDay && now.getTime() - Date.parse(cached.fetchedAt) < 600_000) return cached;
+    if (cached?.fetchedAt && correctDay && now.getTime() - Date.parse(cached.fetchedAt) < 600_000) return { ...cached, cached: true };
     try {
       const metric = p.source === 'npm' ? await this.providers.npm(p.id, now) : p.source === 'reddit' ? await this.providers.reddit(p.id, token, userAgent) : await this.providers.extension(p);
-      const reading = { product: p, metric, fetchedAt: now.toISOString() }; this.cache.set(key, reading); return reading;
-    } catch (e) { return { ...cached, product: p, error: errorMessage(e), stale: !!cached?.metric }; }
+      const reading = { product: p, metric, fetchedAt: now.toISOString(), attemptedAt: now.toISOString(), cached: false }; this.cache.set(key, reading); return reading;
+    } catch (e) { return { ...cached, product: p, attemptedAt: now.toISOString(), cached: false, error: errorMessage(e), stale: !!cached?.metric }; }
   }
 }
 export async function parallelMap<T, R>(items: T[], task: (item: T) => Promise<R>, limit = 4): Promise<R[]> {
