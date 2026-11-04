@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.0
+
+- Separate launch window readiness from actual data availability, with Before/After coverage and first retained observation dates. Block fully empty comparison cards while preserving diagnostic Markdown export.
+- Add standalone current metric cards for fresh source counts and 7/30/90-day npm totals, with previews and PNG/SVG export without release history.
+- Add opt-in background collection while VS Code runs, profile process leases, startup activation, 10–1440-minute intervals and persisted collection health.
+- Add serialized storage estimates, retention warnings and a reproducible maximum-load benchmark. Add bounded, versioned local JSON backups with an explicit replacement review and interrupted-restore recovery journal; exclude credentials/settings.
+- Suggest recent npm version publication dates for user-reviewed release markers, without installing packages or automatically adding markers.
+- Add Health & progress with separate per-source weekly metrics, coverage, observation spans, source failures and milestone summaries.
+
+
 ## 1.0.0
 
 - Add optional persistent release notes (up to 500 characters), with safe display and inclusion in reports and cards; preserve existing metadata and tracking.

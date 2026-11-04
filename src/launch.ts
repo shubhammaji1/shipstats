@@ -158,7 +158,7 @@ export function launchMarkdown(report: LaunchReport): string {
     lines.push('', `## Daily comparison: ${md(series.product.id)}`, '', '| Day in window | Before (UTC) | Downloads | After (UTC) | Downloads |', '| --- | --- | --- | --- | --- |');
     for (let i = 0; i < series.after.length; i++) lines.push(`| ${i + 1} | ${series.before[i]!.day} | ${format(series.before[i]!.downloads)} | ${series.after[i]!.day} | ${format(series.after[i]!.downloads)} |`);
   }
-  lines.push('', '## Interpretation', '', ...c.notes.map(note => `- ${md(note)}`), '', 'Generated locally by ShipStats 1.0.0. No causal attribution is implied.', '');
+  lines.push('', '## Interpretation', '', ...c.notes.map(note => `- ${md(note)}`), '', 'Generated locally by ShipStats. No causal attribution is implied.', '');
   return lines.join('\n');
 }
 const xml = (v: string): string => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
@@ -168,6 +168,7 @@ export function shareCard(report: LaunchReport, metric: unknown): string {
   const row = typeof metric === 'string' && metric.startsWith('product:') ? c.rows.find(r => keyOf(r.product) === metric.slice(8)) : undefined;
   if (!(metric === 'npm-total' && c.npmTotals) && !row) throw new Error('Choose a share-card metric from the current launch report.');
   const a = row ? row.a.value : c.npmTotals!.a, b = row ? row.b.value : c.npmTotals!.b;
+  if (a === null && b === null) throw new Error('No historical values in either window. Choose a current-total card or collect observations before and after a future release.');
   const rawDifference = a !== null && b !== null ? a - b : null;
   const difference = rawDifference !== null && Number.isSafeInteger(rawDifference) ? rawDifference : null;
   const percent = difference !== null && b !== null && b > 0 ? `${difference > 0 ? '+' : ''}${(difference / b * 100).toFixed(1)}%` : 'Unavailable';

@@ -9,6 +9,15 @@ const string = (x: unknown): string => typeof x === 'string' ? x : '';
 
 export class Providers {
   constructor(private http = new HttpClient()) {}
+  async releases(id: string, now = new Date()): Promise<{ version: string; date: string; publishedAt: string }[]> {
+    const data = obj(await this.http.json(`https://registry.npmjs.org/${encodeURIComponent(id)}`, { headers: { Accept: 'application/json' } }));
+    if (data.name !== id) throw new Error('npm returned a different package.');
+    const time = obj(data.time), versions = obj(data.versions);
+    return Object.entries(time).filter(([version, at]) => version.length <= 70 && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version) && Object.hasOwn(versions, version) &&
+      typeof at === 'string' && Number.isFinite(Date.parse(at)) && Date.parse(at) <= now.getTime() && Date.parse(at) >= now.getTime()-180*86400_000)
+      .map(([version, at]) => ({ version, date: new Date(at as string).toISOString().slice(0,10), publishedAt: new Date(at as string).toISOString() }))
+      .sort((a,b) => b.publishedAt.localeCompare(a.publishedAt)).slice(0,30);
+  }
   async discover(identity: string, scope: boolean): Promise<Discovery> {
     const value = discoveryIdentity(identity, scope), found = new Map<string, Candidate>();
     let truncated = false, fallback = false;

@@ -10,17 +10,19 @@ const Module = require('node:module');
 
 // Run the real extension controller and dashboard together, replacing only VS Code
 // services and network providers. Message ordering and persistence remain real.
-function harness(initial: { products?: Product[]; settings?: Record<string, string>; identityKey?: string; input?: string; history?: unknown; insights?: unknown; monitoring?: unknown; cancelExport?: boolean; failHistoryWrite?: boolean; failInsightsWrite?: boolean; failMonitorWrite?: boolean; failExport?: boolean } = {}) {
+function harness(initial: { products?: Product[]; settings?: Record<string, unknown>; identityKey?: string; input?: string; history?: unknown; insights?: unknown; monitoring?: unknown; journal?:unknown; backupText?:string; cancelExport?: boolean; failHistoryWrite?: boolean; failInsightsWrite?: boolean; failMonitorWrite?: boolean; failExport?: boolean } = {}) {
   const state = new Map<string, unknown>(), settings = new Map<string, unknown>(Object.entries(initial.settings ?? {}));
   if (initial.products) state.set('products', initial.products);
   if (initial.identityKey) state.set('npmDiscoveryIdentity', initial.identityKey);
   if (initial.history) state.set('history.v1', initial.history);
   if (initial.insights) state.set('insights.v1', initial.insights);
   if (initial.monitoring) state.set('monitor.v1', initial.monitoring);
+  if (initial.journal) state.set('restore.pending.v1',initial.journal);
+  const updates:string[]=[];
   const writes: { uri: unknown; text: string; bytes: Buffer }[] = [], saveOptions: any[] = [];
   let saveDialogs = 0;
   const commands = new Map<string, () => Promise<void>>(), posted: any[] = [];
-  let receive: (m: unknown) => void, dom: any, sourcePrompts = 0;
+  let receive: (m: unknown) => void, dom: any, sourcePrompts = 0, panelDispose: (()=>void)|undefined;
   class EventEmitter { event = () => ({ dispose() {} }); fire() {} dispose() {} }
   const disposable = () => ({ dispose() {} });
   const vscode = {
@@ -31,7 +33,7 @@ function harness(initial: { products?: Product[]; settings?: Record<string, stri
       getConfiguration: () => ({ get: (key: string, fallback: unknown) => settings.get(key) ?? fallback,
         update: async (key: string, value: unknown) => { settings.set(key, value); } }),
       onDidChangeConfiguration: disposable,
-      fs: { writeFile: async (uri: unknown, data: Uint8Array) => { if (initial.failExport) throw new Error('Export permission denied'); writes.push({ uri, text: Buffer.from(data).toString('utf8'), bytes: Buffer.from(data) }); } }
+      fs: { stat:async()=>({size:Buffer.byteLength(initial.backupText||'')}),readFile:async()=>Buffer.from(initial.backupText||''),writeFile: async (uri: unknown, data: Uint8Array) => { if (initial.failExport) throw new Error('Export permission denied'); writes.push({ uri, text: Buffer.from(data).toString('utf8'), bytes: Buffer.from(data) }); } }
     },
     commands: { registerCommand: (id: string, fn: () => Promise<void>) => { commands.set(id, fn); return disposable(); } },
     window: {
@@ -41,6 +43,7 @@ function harness(initial: { products?: Product[]; settings?: Record<string, stri
       showQuickPick: async (options: unknown[]) => { sourcePrompts++; return options[0]; },
       showInputBox: async () => initial.input,
       showSaveDialog: async (options: unknown) => { saveDialogs++; saveOptions.push(options); return initial.cancelExport ? undefined : { path: '/selected/history.csv' }; },
+      showOpenDialog:async()=>initial.backupText===undefined?undefined:[{path:'/selected/backup.json'}],
       createWebviewPanel: () => ({
         webview: { cspSource: 'mock:', asWebviewUri: (uri: any) => uri,
           onDidReceiveMessage: (fn: (m: unknown) => void) => { receive = fn; return disposable(); },
@@ -48,12 +51,12 @@ function harness(initial: { products?: Product[]; settings?: Record<string, stri
             const message = JSON.parse(JSON.stringify(data)); posted.push(message);
             dom?.window.dispatchEvent(new dom.window.MessageEvent('message', { data: message })); return Promise.resolve(true);
           } },
-        onDidDispose: disposable, reveal() {}, dispose() {}, visible: true
+        onDidDispose: (fn:()=>void) => {panelDispose=fn;return disposable();}, reveal() {}, dispose() {panelDispose?.();}, visible: true
       })
     }
   };
   const context: any = { subscriptions: [], extensionUri: { path: join(__dirname, '../..') },
-    globalState: { get: (key: string) => state.get(key), update: async (key: string, value: unknown) => { if (initial.failHistoryWrite && key === 'history.v1') throw new Error('History storage unavailable'); if (initial.failInsightsWrite && key === 'insights.v1') throw new Error('Insights storage unavailable'); if (initial.failMonitorWrite && key === 'monitor.v1') throw new Error('Monitoring storage unavailable'); state.set(key, value); } },
+    globalState: { get: (key: string) => state.get(key), update: async (key: string, value: unknown) => {updates.push(key); if (initial.failHistoryWrite && key === 'history.v1') throw new Error('History storage unavailable'); if (initial.failInsightsWrite && key === 'insights.v1') throw new Error('Insights storage unavailable'); if (initial.failMonitorWrite && key === 'monitor.v1') throw new Error('Monitoring storage unavailable'); state.set(key, value); } },
     secrets: { get: async () => undefined, delete: async () => {}, store: async () => {} } };
   const originalLoad = Module._load;
   try {
@@ -64,11 +67,11 @@ function harness(initial: { products?: Product[]; settings?: Record<string, stri
   const app = context.subscriptions[0];
   const drain = (): Promise<void> => app.queue;
   return {
-    state, settings, posted, drain, writes, saveOptions,
+    state, settings, posted, drain, writes, saveOptions,updates,closePanel(){panelDispose?.();},
     get saveDialogs() { return saveDialogs; },
     get document() { return dom.window.document; },
     get sourcePrompts() { return sourcePrompts; },
-    get latest() { return posted.at(-1); },
+    get latest() { return posted.filter((m:any)=>m.type==='state').at(-1); },
     async open() {
       await commands.get('shipstats.open')!();
       dom = new JSDOM('<main id="app"></main>', { runScripts: 'outside-only' });
@@ -87,6 +90,51 @@ const fixtureNpm: Providers['npm'] = async () => {
   const now = new Date(), daily: Day[] = Array.from({ length: 180 }, (_, i) => ({ day: dateAt(now, i - 180), downloads: 1 }));
   return { kind: 'npm', daily, windows: windows(daily, now), start: dateAt(now, -180), end: dateAt(now, -1) };
 };
+
+test('npm discovery suggests dated versions without changing saved markers until the user saves',async()=>{
+ const oldNpm=Providers.prototype.npm,oldReleases=Providers.prototype.releases;Providers.prototype.npm=fixtureNpm;Providers.prototype.releases=async()=>[{version:'1.0.0',date:dateAt(new Date(),-3),publishedAt:dateAt(new Date(),-3)+'T12:00:00Z'}];
+ const ui=harness({products:[{source:'npm',id:'react'}]});
+ try{await ui.open();ui.send({type:'releaseDiscover',key:'npm:react'});await ui.drain();assert.equal(ui.latest.insights.markers.length,0);assert.equal(ui.latest.releaseSuggestions.candidates[0].version,'1.0.0');
+ const review=[...ui.document.querySelectorAll('button')].find((b:any)=>b.textContent==='Review v1.0.0') as any;review.click();assert.equal(ui.latest.insights.markers.length,0);const save=[...ui.document.querySelectorAll('button')].find((b:any)=>b.textContent==='Save release marker') as any;save.click();await ui.drain();assert.equal(ui.latest.insights.markers[0].label,'v1.0.0');}
+ finally{ui.close();Providers.prototype.npm=oldNpm;Providers.prototype.releases=oldReleases;}
+});
+
+test('current-total cards work without markers/history and use the same SVG for preview and export',async()=>{
+ const original=Providers.prototype.extension;Providers.prototype.extension=async()=>({kind:'count',value:42,label:'Cumulative installs'});
+ const ui=harness({products:[{source:'marketplace',id:'pub.ext'}]});
+ try{await ui.open();const card={cardType:'current',key:'marketplace:pub.ext'};ui.send({type:'launchPreview',requestId:'current',...card});await ui.drain();const svg=ui.posted.filter((m:any)=>m.type==='launchPreview').at(-1).svg;assert.match(svg,/CURRENT METRIC/);assert.doesNotMatch(svg,/AFTER RELEASE/);
+ ui.send({type:'launchExport',format:'svg',...card});await ui.drain();assert.equal(ui.writes.at(-1)!.text,svg);
+ ui.send({type:'launchShare',...card});await ui.drain();const request=ui.posted.filter((m:any)=>m.type==='renderShareCard').at(-1);ui.send({type:'saveShareCard',requestId:request.requestId,data:cardPng().toString('base64')});await ui.drain();assert.match(ui.latest.notice,/PNG share card exported/);
+ }finally{ui.close();Providers.prototype.extension=original;}
+});
+test('backup review does not change data, confirmed restore replaces it, and an interrupted restore recovers on startup',async()=>{
+ const {makeBackup}=require('../src/upgrade'),original=Providers.prototype.npm;Providers.prototype.npm=fixtureNpm;
+ const backup=makeBackup([{source:'npm',id:'new'}],[],{groups:[],markers:[]},{rules:[],alerts:[]});
+ const options={products:[{source:'npm',id:'old'} as Product],backupText:JSON.stringify({...backup,token:'never-import'}),failInsightsWrite:false};const ui=harness(options);let reopened:ReturnType<typeof harness>|undefined;
+ try{await ui.open();ui.send({type:'backupInspect'});await ui.drain();assert.equal(ui.latest.products[0].id,'old');let id=ui.latest.backupReview.id;
+ ui.send({type:'backupRestore',id:'wrong'});await ui.drain();assert.equal(ui.latest.products[0].id,'old');
+ options.failInsightsWrite=true;ui.send({type:'backupRestore',id});await ui.drain();assert.equal(ui.latest.products[0].id,'old');assert.ok(ui.state.get('restore.pending.v1'));
+ reopened=harness({products:ui.state.get('products') as Product[],journal:ui.state.get('restore.pending.v1')});await reopened.open();assert.equal(reopened.latest.products[0].id,'old');assert.equal(reopened.state.get('restore.pending.v1'),undefined);
+ reopened.close();reopened=undefined;
+ const success=harness({products:[{source:'npm',id:'old'}],backupText:JSON.stringify(backup)});
+ try{await success.open();success.send({type:'backupInspect'});await success.drain();id=success.latest.backupReview.id;success.send({type:'backupRestore',id});await success.drain();assert.equal(success.latest.products[0].id,'new');assert.equal(success.state.get('restore.pending.v1'),undefined);assert.equal(success.latest.backupReview,undefined);success.send({type:'backupExport'});await success.drain();assert.doesNotMatch(success.writes.at(-1)!.text,/never-import|accessToken/);}finally{success.close();}
+ }finally{ui.close();reopened?.close();Providers.prototype.npm=original;}
+});
+test('saving collection settings immediately samples tracked products and disabling stops its timer',async()=>{
+ const original=Providers.prototype.npm;Providers.prototype.npm=fixtureNpm;const ui=harness({products:[{source:'npm',id:'react'}]});
+ try{await ui.open();const before=ui.updates.filter(k=>k==='collection.v1').length;ui.send({type:'collectionSave',enabled:true,minutes:10});await ui.drain();assert.equal(ui.settings.get('backgroundCollection'),true);assert.equal(ui.latest.collection.enabled,true);assert.equal(ui.updates.filter(k=>k==='collection.v1').length,before+1);
+ ui.send({type:'collectionSave',enabled:false,minutes:10});await ui.drain();assert.equal(ui.settings.get('backgroundCollection'),false);assert.equal(ui.latest.collection.enabled,false);}
+ finally{ui.close();Providers.prototype.npm=original;}
+});
+
+test('opt-in collection runs with the dashboard closed and disposal clears its timer',async()=>{
+ const oldSet=global.setInterval,oldClear=global.clearInterval,original=Providers.prototype.npm;Providers.prototype.npm=fixtureNpm;
+ const timers:{fn:()=>void,ms:number,cleared:boolean}[]=[];
+ (global as any).setInterval=(fn:()=>void,ms:number)=>{const t={fn,ms,cleared:false};timers.push(t);return t;};(global as any).clearInterval=(t:any)=>{if(t&&typeof t==='object'&&'cleared' in t)t.cleared=true;else oldClear(t);};
+ const ui=harness({products:[{source:'npm',id:'react'}],settings:{backgroundCollection:true,collectionMinutes:10}});
+ try{await ui.drain();assert.ok(ui.state.get('history.v1'));assert.equal(timers[0]!.ms,600000);await ui.open();ui.closePanel();const before=ui.updates.filter(k=>k==='collection.v1').length;timers.filter(t=>!t.cleared).at(-1)!.fn();await ui.drain();assert.equal(ui.updates.filter(k=>k==='collection.v1').length,before+1);ui.close();assert.ok(timers.every(t=>t.cleared));}
+ finally{try{ui.close();}finally{global.setInterval=oldSet;global.clearInterval=oldClear;Providers.prototype.npm=original;}}
+});
 
 test('switching username clears previous npm cards, totals and picker before the new request completes', async () => {
   const originalDiscover = Providers.prototype.discover, originalNpm = Providers.prototype.npm;

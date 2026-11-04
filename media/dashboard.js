@@ -5,7 +5,7 @@
   const app = document.getElementById('app');
   const saved = vscode.getState() || {};
   let period = [7, 30, 90].includes(saved.period) ? saved.period : 30;
-  let page = ['overview', 'packages', 'integrations', 'insights', 'launch'].includes(saved.page) ? saved.page : 'packages';
+  let page = ['overview', 'packages', 'integrations', 'insights', 'launch', 'health'].includes(saved.page) ? saved.page : 'packages';
   let state = { products: [], readings: [], busy: true, notice: '' };
   let selection = new Set(), signature = '', query = '', identityDirty = false, discoveryKey;
   let productQuery = '', sourceFilter = 'all', initialized = false, pendingSelection = false;
@@ -54,7 +54,7 @@
   sidebar.append(node('div', 'YOUR DASHBOARD', 'nav-label'));
   const nav = node('nav'); nav.setAttribute('aria-label', 'Dashboard navigation');
   const navButtons = {};
-  for (const [name, title, glyph] of [['overview', 'Overview', '▦'], ['packages', 'Packages', '◇'], ['integrations', 'Integrations', '⌘'], ['insights', 'Insights', '+'], ['launch', 'Launch Review', '*']]) {
+  for (const [name, title, glyph] of [['overview', 'Overview', '▦'], ['packages', 'Packages', '◇'], ['integrations', 'Integrations', '⌘'], ['insights', 'Insights', '+'], ['launch', 'Launch Review', '*'], ['health', 'Health & progress', '+']]) {
     const b = button('', () => setPage(name), 'nav-button');
     const icon = node('span', glyph, 'nav-icon'); icon.setAttribute('aria-hidden', 'true');
     b.append(icon, node('span', title)); b.setAttribute('aria-controls', `view-${name}`); navButtons[name] = b; nav.append(b);
@@ -87,7 +87,7 @@
   statusLine.append(account, status, notice); workspace.append(statusLine);
   const content = node('div', undefined, 'content');
   const views = {};
-  for (const name of ['overview', 'packages', 'integrations', 'insights', 'launch']) { const view = node('section', undefined, `view view-${name}`); view.id = `view-${name}`; view.setAttribute('aria-label', `${name} view`); views[name] = view; content.append(view); }
+  for (const name of ['overview', 'packages', 'integrations', 'insights', 'launch', 'health']) { const view = node('section', undefined, `view view-${name}`); view.id = `view-${name}`; view.setAttribute('aria-label', `${name} view`); views[name] = view; content.append(view); }
   workspace.append(content); app.append(workspace);
 
   // Overview: trustworthy totals, daily activity, then searchable product cards.
@@ -289,6 +289,61 @@
   function markersFor(keys, start, end) { return (state.insights?.markers || []).filter(m => keys.includes(m.key) && m.date >= start && m.date <= end); }
   function markerLegend(markers) { const details = node('details', undefined, 'release-legend'); details.append(node('summary', `Release markers (${markers.length})`)); const list = node('ul'); for (const m of markers) list.append(node('li', `${m.date} (UTC): ${m.label} / ${m.key}`)); details.append(list); return details; }
 
+  const releaseDiscovery=node('section',undefined,'panel comparison-panel');views.insights.append(releaseDiscovery);
+  releaseDiscovery.append(node('h2','Discover npm release dates'),node('p','Suggest up to 30 published versions from the last 180 days for one tracked npm package. Review and save each marker yourself. Publication dates may differ from launch dates. Extension releases can still be entered manually.','fine'));
+  const releasePackage=field(releaseDiscovery,'Package for release discovery',node('select'));
+  const discoverReleases=button('Discover releases',()=>send('releaseDiscover',{key:releasePackage.value}),'ghost');releaseDiscovery.append(discoverReleases);
+  const suggestedReleases=node('div',undefined,'release-suggestions');releaseDiscovery.append(suggestedReleases);
+  function renderReleaseSuggestions(){
+    options(releasePackage,state.products.filter(p=>p.source==='npm').map(p=>[keyOf(p),p.id]),releasePackage.value);
+    releasePackage.disabled=!!state.busy;discoverReleases.disabled=state.busy||!releasePackage.value;suggestedReleases.replaceChildren();
+    const suggestions=state.releaseSuggestions;if(!suggestions)return;
+    suggestedReleases.append(node('p',`Publication dates from npm / ${suggestions.key}. Saving a marker does not create historical observations.`,'fine'));
+    if(!suggestions.candidates.length)suggestedReleases.append(node('p','No dated versions found in the last 180 days. Add the actual release date manually.','fine'));
+    for(const candidate of suggestions.candidates){
+      const item=node('div',undefined,'monitor-item'),label=`v${candidate.version}`;
+      item.append(node('strong',`${label} / ${candidate.date} UTC`),node('p',`Published ${candidate.publishedAt}`,'fine'));
+      const saved=(state.insights?.markers||[]).some(m=>m.key===suggestions.key&&m.date===candidate.date&&m.label===label);
+      const review=button(saved?'Marker already saved':`Review ${label}`,()=>{markerEditorId='';markerEditor.value='';loadMarker();markerProduct.value=suggestions.key;markerDate.value=candidate.date;markerLabel.value=label;markerNotes.value='';setPage('insights');markerNotes.focus();},'ghost');review.disabled=state.busy||saved;item.append(review);suggestedReleases.append(item);
+    }
+  }
+  views.health.append(pageHeading('Keep your history useful.','Collection status, bounded storage, local backups and a weekly progress review.','HEALTH & PROGRESS'));
+  const collectionPanel=node('section',undefined,'panel comparison-panel');views.health.append(collectionPanel);
+  collectionPanel.append(node('h2','Background collection'),node('p','Opt in to collect while VS Code runs, even with the dashboard closed. Nothing runs after VS Code closes. One window collects in the background for each local VS Code storage profile. Daily collection is the default; frequent collection reaches the 100-observation limit sooner.','fine'));
+  const collectionForm=node('form',undefined,'comparison-form collection-form');collectionPanel.append(collectionForm);
+  const collectionEnabled=field(collectionForm,'Collect in background',node('input'));collectionEnabled.type='checkbox';
+  const collectionMinutes=field(collectionForm,'Collection interval (minutes)',node('input'));collectionMinutes.type='number';collectionMinutes.min='10';collectionMinutes.max='1440';collectionMinutes.step='1';collectionMinutes.required=true;
+  const collectionSave=node('button','Save collection settings','primary');collectionSave.type='submit';collectionForm.append(collectionSave);
+  let collectionDirty=false,collectionPending=false;
+  collectionForm.addEventListener('input',()=>{collectionDirty=true;});collectionForm.addEventListener('change',()=>{collectionDirty=true;});
+  collectionForm.addEventListener('submit',event=>{event.preventDefault();if(!state.busy){collectionPending=true;send('collectionSave',{enabled:collectionEnabled.checked,minutes:Number(collectionMinutes.value)});}});
+  const collectionStatus=node('div');collectionPanel.append(collectionStatus);
+  const storagePanel=node('section',undefined,'panel comparison-panel');views.health.append(storagePanel);storagePanel.append(node('h2','Storage and backups'));
+  const storageStatus=node('div');storagePanel.append(storageStatus);
+  const backupExport=button('Export backup',()=>send('backupExport'),'ghost'),backupInspect=button('Review backup file',()=>send('backupInspect'),'ghost');storagePanel.append(backupExport,backupInspect);
+  const restoreReview=node('div',undefined,'backup-review');storagePanel.append(restoreReview);
+  const progressPanel=node('section',undefined,'panel comparison-panel');views.health.append(progressPanel);progressPanel.append(node('h2','Weekly progress'));
+  const progressContent=node('div');progressPanel.append(progressContent);
+  function renderHealth(){
+    const status=state.collection||{};
+    if(collectionPending&&!state.busy){collectionPending=false;if(state.notice?.startsWith('Background collection'))collectionDirty=false;}
+    if(!collectionDirty){collectionEnabled.checked=!!status.enabled;collectionMinutes.value=String(status.minutes||1440);}
+    for(const control of collectionForm.querySelectorAll('input,button'))control.disabled=!!state.busy;
+    collectionStatus.replaceChildren(node('p',`${status.enabled?'Enabled':'Disabled'} / Last attempt: ${status.lastAttemptAt||'none'} / Last successful source fetch: ${status.lastSuccessAt||'none'}.`,'fine'));
+    if(status.error)collectionStatus.append(node('p',status.error,'error'));
+    const storage=state.storage;storageStatus.replaceChildren();
+    if(storage){storageStatus.append(node('p',`${fmt(storage.bytes)} bytes serialized / ${fmt(storage.snapshots)} retained snapshots.`, 'storage-size'),node('p',`Limits: ${storage.maxProducts} products; ${storage.perProduct} observations per product; ${storage.days}-day age limit. More frequent collection shortens effective history.`, 'fine'),node('p',storage.note,'fine'));if(storage.warning)storageStatus.append(node('p',storage.warning,'error'));}
+    backupExport.disabled=backupInspect.disabled=!!state.busy;restoreReview.replaceChildren();
+    const backup=state.backupReview;
+    if(backup){restoreReview.append(node('h3','Review before restoring'),node('p',`Backup created ${backup.createdAt}: ${backup.products} products, ${backup.snapshots} retained observations, ${backup.groups} groups, ${backup.markers} markers and ${backup.rules} rules.`),node('p','Restoring replaces your tracked products, saved history, groups, release markers, rules and alerts. Export your current backup first. Credentials and collection settings are excluded. Expired observations and alerts are pruned.','fine'));
+      const apply=button('Replace local data with this backup',()=>send('backupRestore',{id:backup.id}),'primary'),cancel=button('Cancel restore',()=>send('backupCancel'),'ghost');apply.disabled=cancel.disabled=!!state.busy;restoreReview.append(apply,cancel);}
+    progressContent.replaceChildren();const progress=state.progress;if(!progress)return;
+    progressContent.append(node('p',`${progress.start} to ${progress.end} UTC / ${progress.milestones} milestone alerts in the last 7 days / ${progress.failures} source failures in the latest refresh.`,'fine'),node('p','npm compares 7 completed days with the preceding 7. Other sources show actual saved observations inside the week. Values are not unique users and are never summed across source types.','fine'));
+    if(!progress.rows.length){progressContent.append(node('p','Track products and collect data to build your progress review.','fine'));return;}
+    const wrap=node('div',undefined,'comparison-table-wrap'),table=node('table');table.append(node('caption',`Weekly progress computed ${progress.computedAt}`));const head=node('thead'),header=node('tr');for(const label of ['Product / metric','Value','Change','Coverage / health']){const th=node('th',label);th.scope='col';header.append(th);}head.append(header);table.append(head);const body=node('tbody');
+    for(const row of progress.rows){const tr=node('tr'),name=node('td'),coverage=node('td');name.append(node('strong',`${row.product.source} / ${row.product.id}`),node('small',row.meaning));coverage.append(node('span',row.coverage),node('small',`${row.health} / As of ${row.asOf||'unavailable'}`));tr.append(name,node('td',fmt(row.value)),node('td',fmt(row.difference)),coverage);body.append(tr);}table.append(body);wrap.append(table);progressContent.append(wrap);
+  }
+
   views.launch.append(pageHeading('Review your next chapter.', 'Compare a release, track milestones and export an honest progress card.', 'LAUNCH REVIEW'));
   const alertBadge = node('span', '', 'alert-badge'); alertBadge.hidden = true; alertBadge.title = 'Unread monitoring alerts'; navButtons.launch.append(alertBadge);
   const launchPanel = node('section', undefined, 'panel comparison-panel'); views.launch.append(launchPanel);
@@ -309,6 +364,14 @@
   const launchDays = field(launchForm, 'Days before and after', node('select')); options(launchDays, [7, 14, 30, 60].map(n => [String(n), `${n} days each`]), '7');
   const launchMode = field(launchForm, 'Review mode', node('select')); options(launchMode, [['complete', 'Completed window'], ['early', 'Early review (preliminary until complete)']], 'complete');
   const launchReadiness = node('p', '', 'launch-readiness fine'); launchReadiness.setAttribute('role', 'status'); launchPanel.append(launchReadiness);
+  const availabilityBox=node('div',undefined,'launch-availability');availabilityBox.setAttribute('aria-live','polite');launchPanel.append(availabilityBox);
+  let availabilityKey='',availabilityId='',availabilitySequence=0;
+  function inspectAvailability(ready){
+    const key=JSON.stringify([launchRequest(),state.insights?.markers,state.history?.length,state.history?.at(-1)?.fetchedAt,state.readings.map(r=>[keyOf(r.product),r.fetchedAt,r.error,r.health])]);
+    if(!ready){availabilityKey='';availabilityId='';availabilityBox.replaceChildren(node('p','Data availability will be assessed when a completed-day window is ready.','fine'));return;}
+    if(key===availabilityKey||state.busy||pendingLaunch)return;
+    availabilityKey=key;availabilityId=String(++availabilitySequence);availabilityBox.replaceChildren(node('p','Checking data coverage for these windows…','fine'));send('launchInspect',{requestId:availabilityId,request:launchRequest()});
+  }
   const reviewButton = node('button', 'Review launch', 'primary'); reviewButton.type = 'submit'; launchForm.append(reviewButton);
   let pendingLaunch = false;
   function launchRequest() { return { markerId: launchMarker.value, target: launchTarget.value, days: Number(launchDays.value), ...(launchMode.value === 'early' ? { mode: 'early' } : {}) }; }
@@ -322,24 +385,49 @@
   launchForm.addEventListener('change', () => renderLaunchReport());
   const launchResult = node('div', undefined, 'launch-result'); launchResult.setAttribute('aria-live', 'polite'); launchPanel.append(launchResult);
   const launchExports = node('div', undefined, 'launch-exports'); launchPanel.append(launchExports);
+  const cardType = field(launchExports, 'Card type', node('select'));options(cardType,[['comparison','Release comparison'],['current','Current total / count']],'comparison');
+  const currentProduct = field(launchExports,'Current-card product',node('select'));
+  const currentPeriod = field(launchExports,'Current npm window',node('select'));options(currentPeriod,[7,30,90].map(n=>[String(n),`${n} completed days`]),'30');
   const cardMetric = field(launchExports, 'Share-card metric', node('select'));
   const reportExport = button('Export report (Markdown)', () => send('launchExport', { format: 'md' }), 'ghost');
-  const svgExport = button('Export card (SVG)', () => send('launchExport', { format: 'svg', metric: cardMetric.value }), 'ghost');
-  const pngExport = button('Export card (PNG)', () => send('launchShare', { metric: cardMetric.value }), 'primary');
+  function cardRequest() {return cardType.value==='current'?{cardType:'current',key:currentProduct.value,days:Number(currentPeriod.value)}:{metric:cardMetric.value};}
+  const svgExport = button('Export card (SVG)', () => send('launchExport', { format: 'svg', ...cardRequest() }), 'ghost');
+  const pngExport = button('Export card (PNG)', () => send('launchShare', cardRequest()), 'primary');
   launchExports.append(reportExport, svgExport, pngExport);
+  const cardHelp=node('p','','fine');launchPanel.append(cardHelp);
+  const useCurrent=button('Use a current-total card',()=>{cardType.value='current';const key=cardMetric.value.startsWith('product:')?cardMetric.value.slice(8):launchTarget.value.startsWith('product:')?launchTarget.value.slice(8):currentProduct.value;if(state.products.some(p=>keyOf(p)===key))currentProduct.value=key;renderCardControls();},'ghost');launchPanel.append(useCurrent);
   const cardPreview = node('figure', undefined, 'launch-card-preview'); cardPreview.hidden = true;
   const previewCaption = node('figcaption', 'Share-card preview'); const previewImage = node('img'); previewImage.alt = 'Launch review share-card preview';
   cardPreview.append(previewCaption); launchPanel.append(cardPreview);
   let previewKey = '', previewId = '', previewSequence = 0;
   function resetCardPreview() { previewKey = ''; previewId = ''; cardPreview.hidden = true; previewImage.removeAttribute('src'); previewImage.remove(); }
   function updateCardPreview() {
-    const report = currentLaunchReport(); if (!report || pendingLaunch) { resetCardPreview(); return; }
-    const key = JSON.stringify([launchRequest(), report.comparison.computedAt, cardMetric.value]);
-    if (key === previewKey || state.busy || !cardMetric.value) return;
+    const report = currentLaunchReport(); if (!canPreviewCard() || pendingLaunch) { resetCardPreview(); return; }
+    const key = JSON.stringify([cardRequest(),cardType.value==='current'?state.readings.find(r=>keyOf(r.product)===currentProduct.value)?.fetchedAt:[launchRequest(),report?.comparison.computedAt]]);
+    if (key === previewKey || state.busy) return;
     previewKey = key; previewId = String(++previewSequence); cardPreview.hidden = false; previewImage.removeAttribute('src'); previewImage.remove(); previewCaption.textContent = 'Preparing share-card preview…';
-    send('launchPreview', { requestId: previewId, metric: cardMetric.value });
+    send('launchPreview', { requestId: previewId, ...cardRequest() });
   }
-  cardMetric.addEventListener('change', updateCardPreview);
+  function canPreviewCard() {
+    if(cardType.value==='current'){
+      const r=state.readings.find(r=>keyOf(r.product)===currentProduct.value);
+      if(!r || r.error || !r.metric || !['fresh','cached','partial'].includes(r.health))return false;
+      return r.metric.kind==='count' || r.metric.windows.some(w=>w.days===Number(currentPeriod.value)&&w.total!==null);
+    }
+    const report=currentLaunchReport();if(!report)return false;
+    const pair=cardMetric.value==='npm-total'?report.comparison.npmTotals:report.comparison.rows.find(r=>`product:${keyOf(r.product)}`===cardMetric.value);
+    if(!pair)return false;return cardMetric.value==='npm-total'?pair.a!==null||pair.b!==null:pair.a.value!==null||pair.b.value!==null;
+  }
+  function renderCardControls(){
+    const report=currentLaunchReport(),current=cardType.value==='current',blocked=state.busy||pendingLaunch;
+    cardType.disabled=!!blocked;currentProduct.disabled=blocked||!current||!state.products.length;
+    currentProduct.parentElement.hidden=!current;currentPeriod.parentElement.hidden=!current||!currentProduct.value.startsWith('npm:');cardMetric.parentElement.hidden=current;
+    currentPeriod.disabled=blocked||!current||!currentProduct.value.startsWith('npm:');cardMetric.disabled=blocked||current||!report;
+    reportExport.disabled=blocked||!report;svgExport.disabled=pngExport.disabled=blocked||!canPreviewCard();useCurrent.disabled=!!blocked||!state.products.length;
+    cardHelp.textContent=current&&!canPreviewCard()?'Refresh the selected product for a fresh source value, or choose an npm window with complete coverage.':current?'Current cards show a fresh source count or a chosen npm rolling window, with its observation time. They are not release comparisons or unique-user counts.':!report?'Generate a review for a comparison card, or choose Current total / count to share a current metric.':!canPreviewCard()?'No historical values in either window for this metric. Comparison-card export is disabled. Choose a current-total card or collect observations for a future release.':'Comparison cards show the available window values. Missing values and coverage remain explicit.';
+    updateCardPreview();
+  }
+  for(const control of [cardMetric,cardType,currentProduct,currentPeriod])control.addEventListener('change',renderCardControls);
   function currentLaunchReport() { const report = state.launchReport; return report && report.marker.id === launchMarker.value && report.days === Number(launchDays.value) && (report.mode || 'complete') === launchMode.value && report.comparison.request.target === launchTarget.value ? report : undefined; }
   function renderLaunchReport() {
     launchResult.replaceChildren(); const report = currentLaunchReport();
@@ -353,8 +441,7 @@
     } else launchReadiness.textContent = 'Save a release marker to see window readiness.';
     reviewButton.textContent = pendingLaunch ? 'Reviewing launch…' : 'Review launch';
     reviewButton.disabled = state.busy || pendingLaunch || !ready;
-    for (const control of launchExports.querySelectorAll('button, select')) control.disabled = state.busy || pendingLaunch || !report;
-    if (!report || pendingLaunch) resetCardPreview();
+    renderCardControls();inspectAvailability(ready);
     if (pendingLaunch) { launchResult.append(node('p', 'Generating your launch review…', 'fine')); return; }
     const failure = state.launchReviewError;
     if (failure && failure.request?.markerId === launchMarker.value && failure.request?.target === launchTarget.value && failure.request?.days === Number(launchDays.value) && (failure.request?.mode || 'complete') === launchMode.value) {
@@ -377,7 +464,7 @@
     const notes = node('ul', undefined, 'fine'); for (const note of c.notes) notes.append(node('li', note)); launchResult.append(notes);
     options(cardMetric, [...(c.npmTotals ? [['npm-total', 'Combined npm downloads only']] : []), ...c.rows.map(row => [`product:${keyOf(row.product)}`, `${sources[row.product.source]} / ${row.product.id}`])], cardMetric.value);
     for (const series of report.daily || []) launchResult.append(launchComparisonChart(series));
-    updateCardPreview();
+    renderCardControls();
   }
   const monitorPanel = node('section', undefined, 'panel comparison-panel'); views.launch.append(monitorPanel);
   monitorPanel.append(node('h2', 'Milestones and alerts'), node('p', 'Rules run on fresh source fetches, not cache hits (the 10-minute source cache applies). Change alerts have a one-hour cooldown and need a positive baseline. Editing a rule resets its baseline and rearms milestones. Nothing runs while VS Code is closed.', 'fine'));
@@ -410,6 +497,7 @@
     if (signature !== launchSignature) {
       launchSignature = signature;
       options(launchMarker, markers.length ? markers.map(m => [m.id, `${m.date} / ${m.label} / ${m.key}`]) : [['', 'No release markers saved']], launchMarker.value);
+      options(currentProduct,state.products.map(p=>[keyOf(p),`${sources[p.source]} / ${p.id}`]),currentProduct.value);
       const marker = markers.find(m => m.id === launchMarker.value);
       options(launchTarget, [['all', 'All tracked products'], ...groups.map(g => [`group:${g.id}`, `Group: ${g.name}`]), ...state.products.map(p => [`product:${keyOf(p)}`, `${sources[p.source]} / ${p.id}`])], launchTarget.value || (marker ? `product:${marker.key}` : 'all'));
       options(ruleEditor, [['', 'New monitoring rule'], ...rules.map(r => [r.id, `${r.name} / ${r.key}`])], ruleEditorId);
@@ -641,10 +729,19 @@
     }
   }
   window.addEventListener('message', event => {
+    if(event.data?.type==='launchAvailability'){
+      if(event.data.requestId!==availabilityId)return;
+      const data=event.data.availability;availabilityBox.replaceChildren();
+      if(!data){availabilityBox.append(node('p',event.data.error||'Data availability could not be checked.','error'));return;}
+      const comparable=data.rows.filter(r=>r.beforeAvailable&&r.afterAvailable).length,empty=data.rows.every(r=>!r.beforeAvailable&&!r.afterAvailable);
+      availabilityBox.append(node('strong',`${data.preliminary?'Early window ready':'Dates complete'} · ${empty?'Historical data missing':comparable===data.rows.length?'Data available':'Data incomplete'}`));
+      for(const row of data.rows)availabilityBox.append(node('p',`${row.key} / Before: ${row.before}. After: ${row.after}. First retained observation: ${row.firstRecordedAt||'none'}.`,'fine'));
+      availabilityBox.append(node('p','npm daily history comes from its source. Other sources need at least two saved observations in each window; old counts cannot be backfilled by changing a release date.','fine'),button('Collection and storage health',()=>setPage('health'),'ghost'));return;
+    }
     if (event.data?.type === 'launchPreview') {
       const message = event.data;
-      if (message.requestId !== previewId || !currentLaunchReport() || pendingLaunch || typeof message.svg !== 'string' || message.svg.length > 50000) return;
-      previewCaption.textContent = currentLaunchReport().preliminary ? 'Preliminary share-card preview / 1200 × 630' : 'Share-card preview / 1200 × 630';
+      if (message.requestId !== previewId || !canPreviewCard() || pendingLaunch || typeof message.svg !== 'string' || message.svg.length > 50000) return;
+      previewCaption.textContent = cardType.value==='current'?'Current metric preview / 1200 × 630':currentLaunchReport().preliminary ? 'Preliminary share-card preview / 1200 × 630' : 'Share-card preview / 1200 × 630';
       previewImage.onerror = () => { previewCaption.textContent = 'Preview unavailable. You can still export the SVG card.'; previewImage.remove(); };
       try { previewImage.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(message.svg)}`; cardPreview.append(previewImage); }
       catch { previewCaption.textContent = 'Preview unavailable. You can still export the SVG card.'; }
@@ -675,7 +772,7 @@
     app.setAttribute('aria-busy', String(state.busy)); refresh.disabled = add.disabled = search.disabled = state.busy;
     refresh.textContent = state.busy ? '↻  Syncing…' : '↻  Refresh';
     if (pendingSelection && !state.busy) { pendingSelection = false; if (!state.notice && state.products.some(p => p.source === 'npm')) { sourceFilter = 'all'; productQuery = ''; productSearch.value = ''; setPage('overview'); } }
-    renderCandidates(); renderInsights(); renderLaunch(); renderAnalytics(); setPage(page);
+    renderCandidates(); renderInsights(); renderLaunch(); renderHealth(); renderReleaseSuggestions(); renderAnalytics(); setPage(page);
   });
   renderAnalytics(); setPage(page); send('ready');
 })();

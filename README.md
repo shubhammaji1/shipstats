@@ -12,7 +12,7 @@ A VS Code extension for the things you ship. Discover public npm packages, selec
 
 Requires desktop VS Code **1.99+**, or a compatible current desktop build. This is a Node extension; vscode.dev/web is not supported.
 
-1. Install the included `shipstats-analytics-1.0.0.vsix` from **Extensions → … → Install from VSIX**. Reload if prompted.
+1. Install the included `shipstats-analytics-1.1.0.vsix` from **Extensions → … → Install from VSIX**. Reload if prompted.
 2. Click the ShipStats activity icon or run **ShipStats: Open Dashboard** from the Command Palette.
 3. Open **Packages**, enter an **npm username** or **npm scope**, and click **Find packages**. Filter results, check packages, and click **Track selected packages** to open Overview. Within the same account, clearing the discovered selection and saving stops tracking those candidates; other manually tracked packages remain. **Changing the username or scope clears all previous npm tracking, download readings and picker filters before the new search starts.** Marketplace, Open VSX and Reddit tracking remains.
 4. In **Overview**, use **7 / 30 / 90 days** to change the npm window. Explore the combined daily chart, search products, or filter cards by source. Expand **Daily values** for exact source counts; **View source** opens the original product page. Text/source filters affect the cards; overview totals cover complete npm data within the selected product group (or all products).
@@ -28,6 +28,7 @@ Future upgrades under `shubhammaji1.shipstats-analytics` retain that extension's
 - **Packages**: a guided find → choose → track workflow, scrollable package list, explicit selection counts, and manual npm entry. Discovery details are available under **About package discovery**.
 - **Integrations**: clear source-specific metric descriptions, direct add actions and optional Reddit setup. Tokens stay out of the dashboard.
 - **Insights**: manage product groups and release markers, and compare two custom UTC date ranges with coverage details.
+- **Health & progress**: background collection, storage limits, local backup review/restore and weekly source-specific changes.
 - **Launch Review**: review a release, export a report or share card, and manage milestones and the local alert inbox.
 
 New users start on Packages. Returning users with tracked products start on Overview unless a previous page is remembered. The active page and analytics period survive webview recreation. Successful tracking and manual additions reveal Overview. Keyboard focus, light/dark themes, high contrast, reduced motion, and editor widths down to 320px are supported.
@@ -85,9 +86,9 @@ For **Custom comparisons**, choose all tracked products, one group, or one produ
 
 Groups and markers persist. Comparison results are temporary and show their computation timestamp; refreshing data, changing tracked products, or successfully saving/deleting metadata clears them. Editing the form hides an old result until you compare again. CSV export continues to export **all saved observations**, independently of group/text/source filters; it does not export group metadata or comparison reports.
 
-## Launch Review (1.0)
+## Launch Review (1.1)
 
-Release markers are saved manually, not imported automatically. If the list is empty, click **Add release marker**, enter the product, UTC release date and label in Insights, and save. Launch Review reopens with the new marker selected. You can also manage markers directly in **Insights → Release markers**. Under **Saved release markers**, click **Delete release marker** beside an entry to remove it.
+Release markers are saved after your review. **Insights → Discover npm release dates** suggests up to 30 public npm versions from the past 180 days for a tracked package. Select **Review v…** to prefill a marker, adjust the date/notes, then save. A publication date may differ from your launch date. This reads metadata only; it does not install packages or download tarballs. Extension release dates are entered manually. If the list is empty, click **Add release marker**, enter the product, UTC release date and label in Insights, and save. Launch Review reopens with the new marker selected. You can also manage markers directly in **Insights → Release markers**. Under **Saved release markers**, click **Delete release marker** beside an entry to remove it.
 
 In **Launch Review**, choose a release marker, its product (or a group containing it), and a planned **7-, 14-, 30- or 60-day** window. Readiness shows **completed days** and the date the full review becomes available before you click. The release day belongs to After. Dates and windows use UTC.
 
@@ -102,7 +103,11 @@ Comparisons use completed days within the last 180 days. Missing daily coverage 
 
 Use **Export report (Markdown)** for the full comparison, coverage and observed endpoint timestamps. **Export card (SVG)** or **Export card (PNG)** creates a **1200 x 630** card for one selected metric: combined npm downloads only, or one product's source metric. Cards include ranges, computation time and caveats; long labels may be shortened on the card while the full report retains them. Reports are temporary and are cleared when source data or group/release metadata changes. Files are saved only where you choose. Nothing is posted publicly or sent to anyone.
 
-The **share-card preview** appears inside Launch Review after a report is generated. Changing the share metric updates it; changing review inputs or refreshing clears stale previews. The preview uses the same SVG generator as the exports.
+Launch Review distinguishes **date readiness** from **data availability**, showing Before/After coverage and the first retained observation. Changing a release date cannot create historical counts. A completely empty comparison metric cannot be exported as a PNG/SVG card; the diagnostic Markdown report remains available.
+
+Choose **Card type → Current total / count** for a fresh cumulative Marketplace/Open VSX count, a current Reddit comment count, or a selected 7/30/90-day npm rolling total. No marker or historical report is required for a current card. Its observation time and metric meaning are shown explicitly. It is not a lifetime npm total, release comparison or unique-user count. Refresh failed/outdated sources before exporting.
+
+The **share-card preview** appears for a valid comparison or current metric. Changing the share metric updates it; changing review inputs or refreshing clears stale previews. The preview uses the same SVG generator as the exports.
 
 Share cards use a navy/mint layout with prominent After and Before values, signed changes, a percentage-baseline explanation, and a compact coverage footer. Full values and labels remain in the SVG's accessible description and the Markdown report.
 
@@ -121,6 +126,17 @@ Create a uniquely named rule for a tracked product. npm rules use a **7-, 30- or
 - **Alerts** appear only in the Launch Review inbox and unread badge. Mark individual alerts or all visible alerts read. Up to **100 alerts within 90 days** persist across restarts. There are no OS toasts, push notifications or emails. If persistence fails, the error is shown and pending evaluations are retried on the next refresh.
 
 Removing a product or switching npm identity prunes the affected rules and alerts. Clearing Reddit credentials also clears Reddit monitoring and history. Existing 0.4/0.5 tracking, groups and markers remain under the same extension identity; no new account or runtime dependency is required.
+
+## Health & progress (1.1)
+
+- **Background collection** is opt-in and disabled by default. Enable it in Health & progress, with an interval of **10–1440 minutes** (default: **1440**, once a day). A fresh collection also runs when you enable it or an opted-in profile starts. It continues with the dashboard closed, and stops when VS Code exits or collection is disabled. A local process lease allows one background collector per VS Code storage profile; other windows can still refresh manually. Invalid/unreadable leases fail closed. The source cache, rate-limit backoff and bounded parallel requests still apply.
+- Last attempt, last successful source fetch and failures are displayed. Source failures do not become fabricated observations or successful alerts.
+- **Storage health** estimates serialized tracking-data bytes and shows the **50-product**, **100-observation-per-product** and **90-day age** limits. These are caps, not a guarantee of 90 days of data: hourly observations can reach 100 entries in roughly four days. Daily collection retains longer history. Size excludes response caches, credentials and VS Code database overhead. Above 2 MB a review warning appears.
+- **Export backup** saves tracked products, retained history, groups, markers/notes, rules and alerts to a local JSON file. Credentials, identity/discovery settings, source response caches and collection preferences are excluded. Backups contain product identifiers and usage metrics; choose where you save them.
+- **Review backup file** validates a versioned JSON backup up to **5 MB**, then displays its counts. **Replace local data with this backup** explicitly replaces those tracking records. Export your current backup first. Expired observations/alerts are pruned through the normal retention policy. A local journal rolls back failed/interrupted writes on reload before collection resumes. Settings and credentials stay under your control.
+- **Weekly progress** compares complete 7-day npm download windows, and shows actual saved count changes for other sources inside the last seven completed UTC days. Each row keeps its coverage, observation times, source health and meaning. Milestone alerts and latest source failures are summarized. Missing values remain unavailable; source types are not summed and no causal/adoption claims are made.
+
+See [STORAGE_BENCHMARK.md](STORAGE_BENCHMARK.md) for a reproducible maximum-load measurement with 50 products, 5,000 snapshots, all metadata limits and 214-character package names. It measures JSON size/validation, not VS Code's complete on-disk database size. Compile, then run `npm run benchmark:storage`.
 
 ## Settings
 
@@ -144,11 +160,11 @@ Reddit access is **not guaranteed**. This integration is for users who already h
 3. Run **ShipStats: Set Reddit Access Token**. Paste the access token only, without `Bearer`. It is stored in VS Code **SecretStorage**, never in settings, the webview, or logs.
 4. Add a Reddit post. Refresh manually or enable the dashboard refresh interval.
 
-ShipStats calls only `https://oauth.reddit.com/api/info?id=t3_POSTID` with the token. It reads the current comment count and title. It does **not** implement an OAuth login/refresh flow, create API credentials, fetch comment bodies, identify new comments, send new-comment notifications, scrape HTML, or fall back to unauthenticated `.json` endpoints. Tokens can expire or be revoked: a 401/403 requires checking approval or replacing the token. Private/deleted/restricted posts may remain unavailable. **Clear Reddit Access Token** removes the saved secret and cached Reddit readings, saved Reddit observations and Reddit monitoring rules/alerts. Scheduled monitoring requires a visible dashboard. Manual refresh commands can run while VS Code is running; this is not an always-running notification service.
+ShipStats calls only `https://oauth.reddit.com/api/info?id=t3_POSTID` with the token. It reads the current comment count and title. It does **not** implement an OAuth login/refresh flow, create API credentials, fetch comment bodies, identify new comments, send new-comment notifications, scrape HTML, or fall back to unauthenticated `.json` endpoints. Tokens can expire or be revoked: a 401/403 requires checking approval or replacing the token. Private/deleted/restricted posts may remain unavailable. **Clear Reddit Access Token** removes the saved secret and cached Reddit readings, saved Reddit observations and Reddit monitoring rules/alerts. Scheduled monitoring can use optional background collection while VS Code runs. Manual refresh commands can run while VS Code is running; this is not an always-running notification service.
 
 ## Privacy and security
 
-- No analytics collection by ShipStats. No backend. Tracked identifiers and discovery settings stay in your VS Code profile; requested usernames, package names, extension IDs, and post IDs are sent to the corresponding source services.
+- No ShipStats telemetry. No hosted backend. Tracked identifiers and discovery settings stay in your VS Code profile; requested usernames, package names, extension IDs, and post IDs are sent to the corresponding source services.
 - Requests go to fixed npm, Marketplace, Open VSX, and Reddit API hosts. Only Reddit requests carry the Reddit token. Redirects are rejected. Public statistics need no login.
 - The dashboard has a restrictive Content Security Policy, local scripts/styles, no remote assets, and text-only insertion of API content. Source links are constructed from validated saved identifiers. The webview never receives secrets. Generated local SVG data URLs are used only for share-card PNG conversion; no external images or fonts are loaded. Messages are validated again in the extension host.
 - Workspace files are not read. The extension runs locally in remote-development windows (`extensionKind: ui`), so network access comes from the local machine. Native Node fetch is used and does not automatically honor VS Code's `http.proxy`; corporate environments may require system/network configuration.
@@ -194,7 +210,7 @@ npm test
 npm run package
 ```
 
-The generated **`shipstats-analytics-1.0.0.vsix`** is installable locally. Production files are compiled JavaScript and local dashboard assets; development dependencies and tests are excluded. A lockfile pins the dependency tree. To distribute source, run `npm ci` before building. The README logo uses an absolute HTTPS URL so GitHub, Marketplace and Open VSX can load the same image. Packaging also enables standard relative-link rewriting. Push image changes to the public repository before uploading a new release.
+The generated **`shipstats-analytics-1.1.0.vsix`** is installable locally. Production files are compiled JavaScript and local dashboard assets; development dependencies and tests are excluded. A lockfile pins the dependency tree. To distribute source, run `npm ci` before building. The README logo uses an absolute HTTPS URL so GitHub, Marketplace and Open VSX can load the same image. Packaging also enables standard relative-link rewriting. Push image changes to the public repository before uploading a new release.
 
 The manifest publisher is `shubhammaji1`; upload the VSIX under that exact Marketplace publisher ID. Before publishing, verify the configured repository/bugs/homepage URLs, review branding and provider terms, and follow Microsoft's official publishing guide. For Open VSX, use the matching namespace and follow its publishing process. ShipStats does not publish anything automatically.
 

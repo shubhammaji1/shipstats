@@ -167,3 +167,8 @@ footer { display: flex; align-items: center; justify-content: space-between; gap
 .launch-card-preview { margin: 20px 0 0; }.launch-card-preview figcaption { margin-bottom: 10px; font-size: 12px; }.launch-card-preview img { display: block; width: 100%; height: auto; border-radius: 16px; border: 1px solid var(--line); }
 .launch-comparison-chart { margin-top: 24px; }.launch-chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 12px 0; }.launch-chart-grid > div { padding: 14px; border: 1px solid var(--line); border-radius: 12px; min-width: 0; }.launch-chart-grid svg { width: 100%; height: auto; display: block; }.launch-chart-grid .fine { margin: 8px 0; }
 @media (max-width: 650px) { .launch-chart-grid { grid-template-columns: 1fr; } }
+
+/* Collection, coverage and restore review */
+.view-health > .panel { margin-bottom: 20px; }.launch-availability { padding: 14px; margin-bottom: 16px; border: 1px solid var(--line); border-radius: 10px; }.launch-availability .fine { margin-top: 8px; overflow-wrap: anywhere; }.backup-review:not(:empty) { margin-top: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; }.backup-review p { margin: 12px 0; }.backup-review button, .view-health button { margin: 6px 8px 6px 0; }.release-suggestions { margin-top: 12px; }.storage-size { margin: 12px 0; font-weight: 600; }.collection-form input[type=checkbox] { width: auto; }
+
+.collection-form input[type=checkbox] { justify-self: start; margin: 4px 0; }

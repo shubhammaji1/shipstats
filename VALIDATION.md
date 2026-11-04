@@ -1,4 +1,16 @@
-# ShipStats 1.0.0 verification
+# ShipStats 1.1.0 verification
+
+Verified locally on 4 November 2026.
+
+- TypeScript compilation and all 90 offline tests pass. New coverage includes coverage inspection versus date readiness, valid zero/current values, blocked empty comparison exports, bounded backup parsing, credential exclusion, explicit restore review IDs, failed/interrupted restore recovery, background timers with the dashboard closed, immediate enable/disable behavior, profile lease ownership, npm version suggestions and weekly source-specific metrics.
+- Storage benchmark: 50 npm products with 214-character identifiers, 5,000 snapshots, 20 groups, 200 markers with 500-character notes, 50 rules and 100 alerts. Serialized tracking data measured 2,506,168 bytes; formatted backup 3,263,590 bytes. Median pure validation/restore preparation across five runs was 59.55 ms on this Windows/Node 22 machine. Full methodology and exclusions are in STORAGE_BENCHMARK.md.
+- Production dashboard assets were exercised in real headless Chrome using a fixture source/VS Code bridge at desktop and 375 px widths. Missing-history guidance appeared before review, empty comparison exports were disabled, and a current Marketplace count card previewed and exported without historical windows. The actual browser image/canvas PNG output passed the production 1200 x 630 byte/checksum/pixel validator.
+- Browser checks also covered Health & progress, collection settings, backup replacement review, and an npm suggestion prefilling editable marker fields without saving. Screenshots were visually inspected; no page errors or document-level horizontal overflow were observed in the tested layouts.
+- Source requests and VS Code storage/dialog services are fixture-backed in these tests. No live npm metadata, Marketplace, Open VSX, Reddit-token, actual native backup dialog or real multi-window VS Code run is claimed. Actual desktop Extension Host verification remains incomplete (the earlier explicit Code.exe attempt exited 2147483651). No macOS/Linux run is claimed.
+
+Install the VSIX in normal desktop VS Code before publishing to registries. Check existing data, native backup dialogs, an opt-in collection interval, restart/disable behavior and current/launch card export. This release packages all six planned upgrades in one additive 1.1.0 installer; Marketplace and Open VSX uploads are separate actions.
+
+## Historical 1.0.0 verification
 
 Verified locally on 3 November 2026.
 

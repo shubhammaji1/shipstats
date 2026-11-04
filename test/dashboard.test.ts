@@ -320,6 +320,38 @@ test('saved monitoring rules can be deleted directly by ID and busy refreshes di
   ui.dom.window.close();
 });
 
+test('current cards work before a release review and all-empty comparison cards show coverage guidance instead of exports',()=>{
+ const ui=setup({page:'launch'}),p={source:'marketplace',id:'pub.ext'},now=new Date().toISOString();
+ const reading={product:p,metric:{kind:'count',value:0,label:'Installs'},health:'fresh',fetchedAt:now};ui.update({products:[p],readings:[reading]});ui.click('Use a current-total card');
+ const request=ui.messages.at(-1);assert.equal(request.type,'launchPreview');assert.equal(request.cardType,'current');assert.equal(request.key,'marketplace:pub.ext');
+ const svgButton=[...ui.document.querySelectorAll('button')].find((b:any)=>b.textContent==='Export card (SVG)') as any;assert.equal(svgButton.disabled,false);ui.click('Export card (SVG)');assert.equal(ui.messages.at(-1).cardType,'current');
+ const marker={id:'r_empty',key:'marketplace:pub.ext',date:'2026-10-01',label:'v1'};
+ const comparison={request:{target:'all',a:{start:'2026-10-01',end:'2026-10-07'},b:{start:'2026-09-24',end:'2026-09-30'}},targetName:p.id,computedAt:now,rows:[{product:p,metric:'Observed install change',a:{value:null,coverage:'0 saved observations'},b:{value:null,coverage:'0 saved observations'},difference:null,percent:null}],notes:[]};
+ ui.update({products:[p],readings:[reading],insights:{groups:[],markers:[marker]},launchReport:{marker,days:7,comparison}});
+ const type=ui.document.querySelector('[aria-label="Card type"]');type.value='comparison';type.dispatchEvent(new ui.dom.window.Event('change'));
+ assert.equal(svgButton.disabled,true);assert.match(ui.document.querySelector('#view-launch').textContent,/No historical values in either window/);
+ const inspection=ui.messages.filter(m=>m.type==='launchInspect').at(-1);assert.ok(inspection);
+ ui.dom.window.dispatchEvent(new ui.dom.window.MessageEvent('message',{data:{type:'launchAvailability',requestId:inspection.requestId,availability:{rows:[{key:'marketplace:pub.ext',before:'0 saved observations',after:'0 saved observations',beforeAvailable:false,afterAvailable:false}]}}}));
+ assert.match(ui.document.querySelector('.launch-availability').textContent,/Dates complete.*Historical data missing/);assert.match(ui.document.querySelector('.launch-availability').textContent,/First retained observation: none/);
+ ui.dom.window.close();
+});
+
+test('health controls preserve collection drafts, require a reviewed restore ID, and show weekly coverage',()=>{
+ const ui=setup({page:'health'}),p={source:'npm',id:'react'};
+ const base={products:[p],collection:{enabled:false,minutes:1440},storage:{bytes:1024,snapshots:1,maxProducts:50,perProduct:100,days:90,note:'JSON only'}};
+ ui.update(base);const minutes=ui.document.querySelector('[aria-label="Collection interval (minutes)"]');minutes.value='60';minutes.dispatchEvent(new ui.dom.window.Event('input',{bubbles:true}));ui.update(base);assert.equal(minutes.value,'60');
+ const enabled=ui.document.querySelector('[aria-label="Collect in background"]');enabled.checked=true;ui.click('Save collection settings');assert.equal(ui.messages.at(-1).minutes,60);assert.equal(ui.messages.at(-1).enabled,true);
+ ui.update({...base,collection:{enabled:true,minutes:60},notice:'Background collection enabled while VS Code runs.',backupReview:{id:'review-1',createdAt:'2026-11-04',products:1,snapshots:2,groups:0,markers:0,rules:0},progress:{start:'2026-10-28',end:'2026-11-03',computedAt:'2026-11-04',milestones:1,failures:1,rows:[{product:p,value:null,difference:null,health:'error',coverage:'Missing daily coverage',meaning:'Downloads are not users'}]}});
+ assert.match(ui.document.querySelector('.backup-review').textContent,/Restoring replaces/);ui.click('Replace local data with this backup');assert.equal(ui.messages.at(-1).id,'review-1');assert.match(ui.document.querySelector('#view-health table').textContent,/Missing daily coverage/);
+ ui.dom.window.close();
+});
+
+test('release suggestions prefill an editable marker without automatically saving',()=>{
+ const ui=setup({page:'insights'}),p={source:'npm',id:'react'};ui.update({products:[p],releaseSuggestions:{key:'npm:react',candidates:[{version:'1.2.3',date:'2026-10-20',publishedAt:'2026-10-20T12:00:00Z'}]}});
+ ui.click('Review v1.2.3');assert.equal(ui.document.querySelector('[aria-label="Release label"]').value,'v1.2.3');assert.equal(ui.document.querySelector('[aria-label="Release date (UTC)"]').value,'2026-10-20');assert.equal(ui.messages.some(m=>m.type==='markerSave'),false);
+ ui.document.querySelector('[aria-label="Release notes (optional)"]').value='Reviewed context';ui.click('Save release marker');assert.equal(ui.messages.at(-1).marker.notes,'Reviewed context');ui.dom.window.close();
+});
+
 test('PNG rendering failures report the matching request ID so SVG export remains an explicit fallback', () => {
   const ui=setup();
   ui.dom.window.Image=class { onerror: (()=>void)|undefined; set src(value:string) {this.onerror?.();} };

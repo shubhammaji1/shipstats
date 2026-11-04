@@ -7,12 +7,16 @@ import { History, Snapshot, historyCsv, readingHealth } from './history';
 import { Comparison, Insights, compare, deleteInsight, restoreInsights, saveGroup, saveMarker } from './insights';
 import { LaunchReport, MonitorState, acknowledgeAlerts, deleteRule, evaluateRules, launchMarkdown, launchReview, restoreMonitor, saveRule, shareCard, validateCardPng } from './launch';
 import { Providers } from './providers';
+import { CollectorLease } from './collector';
+import { Backup, BACKUP_BYTES, makeBackup, parseBackup, storageHealth, inspectLaunch, currentValue, currentShareCard, progressSummary } from './upgrade';
 import { Discovery, Product, Reading, Source, dateAt, discoveryIdentity, errorMessage, keyOf, product, restoreProducts, selectedPackages, sourceUrl } from './model';
 
 const TOKEN = 'shipstats.reddit.accessToken';
 const HISTORY = 'history.v1';
 const INSIGHTS = 'insights.v1';
 const MONITOR = 'monitor.v1';
+const RESTORE_JOURNAL = 'restore.pending.v1';
+const COLLECTION = 'collection.v1';
 export function activate(context: vscode.ExtensionContext): void {
   const app = new ShipStats(context);
   context.subscriptions.push(app);
@@ -51,6 +55,13 @@ class ShipStats implements vscode.Disposable {
   private monitoring: MonitorState;
   private pendingMonitoring?: MonitorState;
   private pendingShare?: string;
+  private backgroundTimer?: ReturnType<typeof setInterval>;
+  private collectorLease: CollectorLease;
+  private initialized: Promise<void>;
+  private restoreError = '';
+  private pendingBackup?: { data: Backup; id: string };
+  private releaseSuggestions?: { key: string; candidates: {version:string;date:string;publishedAt:string}[] };
+  private collection: { lastAttemptAt?: string; lastSuccessAt?: string; error?: string; successfulProducts?: number };
   private discovery?: Discovery;
   private discoveryKey?: string;
   private busy = false;
@@ -63,10 +74,20 @@ class ShipStats implements vscode.Disposable {
   private tree: ProductsTree;
   private disposables: vscode.Disposable[] = [];
   constructor(private context: vscode.ExtensionContext) {
-    this.products = restoreProducts(context.globalState.get('products'));
-    this.history = new History(context.globalState.get(HISTORY), this.products);
-    this.insights = restoreInsights(context.globalState.get(INSIGHTS), this.products);
-    this.monitoring = restoreMonitor(context.globalState.get(MONITOR), this.products);
+    this.collectorLease=new CollectorLease(context.globalStorageUri?.fsPath);
+    // A retained journal means an earlier restore was interrupted. Display the old
+    // state and repair storage before accepting actions or collecting new samples.
+    const journal = context.globalState.get<Backup>(RESTORE_JOURNAL);
+    const saved = (key: string): unknown => journal?.type === 'shipstats-backup' ? ({products:journal.products,[HISTORY]:journal.history,[INSIGHTS]:journal.insights,[MONITOR]:journal.monitoring} as Record<string,unknown>)[key] : context.globalState.get(key);
+    this.products = restoreProducts(saved('products'));
+    this.history = new History(saved(HISTORY), this.products);
+    this.insights = restoreInsights(saved(INSIGHTS), this.products);
+    this.monitoring = restoreMonitor(saved(MONITOR), this.products);
+    const status = context.globalState.get<Record<string,unknown>>(COLLECTION);
+    const savedTime = (v:unknown) => typeof v==='string' && Number.isFinite(Date.parse(v)) && Date.parse(v)<=Date.now() ? v : undefined;
+    this.collection = { lastAttemptAt:savedTime(status?.lastAttemptAt),lastSuccessAt:savedTime(status?.lastSuccessAt),error:typeof status?.error==='string'?status.error.slice(0,500):undefined,
+      successfulProducts:typeof status?.successfulProducts==='number'&&Number.isInteger(status.successfulProducts)&&status.successfulProducts>=0&&status.successfulProducts<=50?status.successfulProducts:undefined };
+    this.initialized = this.recoverRestore(journal);
     this.discoveryKey = context.globalState.get<string>('npmDiscoveryIdentity');
     if (!this.discoveryKey) {
       // Older builds stored the identity only in settings. Preserve that account's
@@ -80,23 +101,78 @@ class ShipStats implements vscode.Disposable {
     }
     this.tree = new ProductsTree(() => this.products);
     this.disposables.push(this.tree, vscode.window.registerTreeDataProvider('shipstats.products', this.tree));
-    const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
-    status.text = '$(graph) ShipStats'; status.command = 'shipstats.open'; status.tooltip = 'Open developer product analytics'; status.show();
-    this.disposables.push(status, vscode.workspace.onDidChangeConfiguration(e => {
+    const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
+    statusBar.text = '$(graph) ShipStats'; statusBar.command = 'shipstats.open'; statusBar.tooltip = 'Open developer product analytics'; statusBar.show();
+    this.disposables.push(statusBar, vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration('shipstats')) {
         this.analytics.clearReddit(); this.schedule(); this.send();
       }
     }));
+    this.schedule();
+    if (this.config().get<boolean>('backgroundCollection',false) && this.products.length) void this.run(()=>this.collectInBackground(),true);
   }
   private config(): vscode.WorkspaceConfiguration { return vscode.workspace.getConfiguration('shipstats'); }
-  run(fn: () => Promise<void>): Promise<void> {
+  private async collectInBackground(): Promise<void> {
+    if(this.disposed || !this.config().get<boolean>('backgroundCollection',false))return;
+    if(!await this.collectorLease.acquire()){this.notice='Another VS Code window owns background collection for this profile. Manual refresh remains available.';return;}
+    if(this.disposed || !this.config().get<boolean>('backgroundCollection',false)){await this.collectorLease.release();return;}
+    await this.refresh();
+  }
+  private async writeBackupState(data: Backup): Promise<void> {
+    for (const [key,value] of Object.entries({products:data.products,[HISTORY]:data.history,[INSIGHTS]:data.insights,[MONITOR]:data.monitoring})) await this.context.globalState.update(key,value);
+  }
+  private async recoverRestore(journal: unknown): Promise<void> {
+    if (journal === undefined) return;
+    try { const data=parseBackup(JSON.stringify(journal)); await this.writeBackupState(data); await this.context.globalState.update(RESTORE_JOURNAL,undefined); }
+    catch { this.restoreError='An interrupted backup restore could not be recovered. Existing data has been retained; resolve the local storage error and reload VS Code.'; }
+  }
+  private async exportBackup(): Promise<void> {
+    const data=makeBackup(this.products,this.history.entries(),this.insights,this.monitoring);
+    const uri=await vscode.window.showSaveDialog({title:'Export ShipStats backup (no credentials)',defaultUri:vscode.Uri.file(join(homedir(),`shipstats-backup-${dateAt(new Date(),0)}.json`)),filters:{'ShipStats backup':['json']}});
+    if (!uri) return;
+    await vscode.workspace.fs.writeFile(uri,Buffer.from(JSON.stringify(data,null,2),'utf8'));this.notice='Backup exported. It contains product identifiers and saved metrics, without credentials or settings.';
+  }
+  private async inspectBackup(): Promise<void> {
+    this.pendingBackup=undefined;
+    const uris=await vscode.window.showOpenDialog({title:'Review a ShipStats backup',canSelectMany:false,filters:{'ShipStats backup':['json']}});
+    if (!uris?.[0]) return;
+    if ((await vscode.workspace.fs.stat(uris[0])).size>BACKUP_BYTES) throw new Error('Backup exceeds the 5 MB limit.');
+    const bytes=await vscode.workspace.fs.readFile(uris[0]);if(bytes.byteLength>BACKUP_BYTES)throw new Error('Backup exceeds the 5 MB limit.');
+    this.pendingBackup={data:parseBackup(Buffer.from(bytes).toString('utf8')),id:randomUUID()};
+    this.notice='Backup checked. Review its contents and replacement notice in Health & progress before restoring.';
+  }
+  private async restoreBackup(id: unknown): Promise<void> {
+    if (!this.pendingBackup || id!==this.pendingBackup.id) throw new Error('Review a backup file before restoring.');
+    const data=this.pendingBackup.data, old=makeBackup(this.products,this.history.entries(),this.insights,this.monitoring);
+    // Journal is written first. If a write fails or the host exits, the next
+    // activation repairs all four keys from the old validated state.
+    await this.context.globalState.update(RESTORE_JOURNAL,old);
+    try { await this.writeBackupState(data); await this.context.globalState.update(RESTORE_JOURNAL,undefined); }
+    catch (error) {
+      try { await this.writeBackupState(old); await this.context.globalState.update(RESTORE_JOURNAL,undefined); }
+      catch { this.restoreError='Backup restore was interrupted. Reload VS Code after resolving the local storage error to recover the previous data.'; }
+      throw error;
+    }
+    this.products=data.products;this.history=new History(data.history,data.products);this.insights=data.insights;this.monitoring=data.monitoring;
+    this.readings=[];this.analytics=new Analytics(this.providers);this.pendingHistory=[];this.pendingMonitoring=undefined;
+    this.discovery=undefined;this.releaseSuggestions=undefined;this.pendingBackup=undefined;
+    this.comparison=undefined;this.launchReport=undefined;this.launchReviewError=undefined;this.pendingShare=undefined;this.tree.refresh();
+    this.notice='Backup restored. Refresh to fetch current source metrics. Collection settings and credentials were not changed.';
+  }
+  private cardSvg(message: Record<string,unknown>): string {
+    if (message.cardType==='current') return currentShareCard(currentValue(this.products,this.readings,message.key,message.days ?? 30));
+    if (message.cardType!==undefined && message.cardType!=='comparison') throw new Error('Choose a current-total or comparison card.');
+    if (!this.launchReport) throw new Error('Generate a launch report first.');
+    return shareCard(this.launchReport,message.metric);
+  }
+  run(fn: () => Promise<void>, background = false): Promise<void> {
     this.queue = this.queue.then(async () => {
       if (this.disposed) return;
       this.busy = true; this.notice = ''; this.send();
-      try { await fn(); }
+      try { await this.initialized; if (this.restoreError) throw new Error(this.restoreError); await fn(); }
       catch (e) {
         this.notice = errorMessage(e);
-        if (!this.panel) void vscode.window.showErrorMessage(`ShipStats: ${this.notice}`);
+        if (!this.panel && !background) void vscode.window.showErrorMessage(`ShipStats: ${this.notice}`);
       } finally { this.busy = false; this.send(); }
     });
     return this.queue;
@@ -112,6 +188,12 @@ class ShipStats implements vscode.Disposable {
       if (!message || typeof message !== 'object') return;
       const m = message as Record<string, unknown>;
       if (typeof m.type !== 'string') return;
+      if (m.type==='launchInspect') {
+        if (typeof m.requestId!=='string' || m.requestId.length>64) return;
+        try { const availability=inspectLaunch(m.request,this.products,this.readings,this.history.entries(),this.insights);void this.panel?.webview.postMessage({type:'launchAvailability',requestId:m.requestId,availability}); }
+        catch(error) {void this.panel?.webview.postMessage({type:'launchAvailability',requestId:m.requestId,error:errorMessage(error)});}
+        return;
+      }
       void this.run(async () => {
         switch (m.type) {
           case 'ready': {
@@ -130,6 +212,23 @@ class ShipStats implements vscode.Disposable {
             if (m.source !== undefined && !['npm', 'marketplace', 'openvsx', 'reddit'].includes(m.source as string)) throw new Error('Invalid product source.');
             await this.add(m.source as Source | undefined); break;
           case 'refresh': await this.refresh(); break;
+          case 'backupExport': await this.exportBackup(); break;
+          case 'backupInspect': await this.inspectBackup(); break;
+          case 'backupRestore': await this.restoreBackup(m.id); break;
+          case 'backupCancel': this.pendingBackup=undefined; break;
+          case 'collectionSave': {
+            if (typeof m.enabled!=='boolean' || typeof m.minutes!=='number' || !Number.isInteger(m.minutes) || m.minutes<10 || m.minutes>1440) throw new Error('Choose a collection interval from 10 to 1440 minutes.');
+            await this.config().update('collectionMinutes',m.minutes,vscode.ConfigurationTarget.Global);
+            await this.config().update('backgroundCollection',m.enabled,vscode.ConfigurationTarget.Global);this.schedule();
+            if(m.enabled && this.products.length)await this.collectInBackground();
+            this.notice=m.enabled?'Background collection enabled while VS Code runs.':'Background collection disabled.';break;
+          }
+          case 'releaseDiscover': {
+            const p=this.find(m.key);if(p?.source!=='npm')throw new Error('Choose a tracked npm package. Extension release markers can be entered manually.');
+            this.releaseSuggestions=undefined;
+            this.releaseSuggestions={key:keyOf(p),candidates:await this.providers.releases(p.id)};
+            this.notice='Review npm version publication dates before saving markers. No markers were added automatically.';break;
+          }
           case 'export': await this.exportCsv(); break;
           case 'groupSave': await this.saveInsights(saveGroup(this.insights, m.group, this.products)); this.notice = 'Product group saved.'; break;
           case 'groupDelete': await this.saveInsights(deleteInsight(this.insights, 'group', m.id)); this.notice = 'Group deleted. Tracked products and release markers remain.'; break;
@@ -155,22 +254,21 @@ class ShipStats implements vscode.Disposable {
             else next = acknowledgeAlerts(next, m.id);
             await this.saveMonitoring(next); this.notice = 'Alerts marked read.'; break;
           }
-          case 'launchExport': await this.exportLaunch(m.format, m.metric); break;
+          case 'launchExport': await this.exportLaunch(m); break;
           case 'launchPreview': {
-            if (!this.launchReport || typeof m.requestId !== 'string' || m.requestId.length > 64) throw new Error('Generate a launch report before previewing.');
-            const svg = shareCard(this.launchReport, m.metric);
+            if (typeof m.requestId !== 'string' || m.requestId.length > 64) throw new Error('Invalid preview request.');
+            const svg = this.cardSvg(m);
             void this.panel?.webview.postMessage({ type: 'launchPreview', requestId: m.requestId, svg });
             break;
           }
           case 'launchShare': {
-            if (!this.launchReport) throw new Error('Generate a launch report first.');
-            const svg = shareCard(this.launchReport, m.metric);
+            const svg = this.cardSvg(m);
             this.pendingShare = randomUUID();
             void this.panel?.webview.postMessage({ type: 'renderShareCard', requestId: this.pendingShare, svg });
             break;
           }
           case 'saveShareCard': {
-            if (!this.pendingShare || m.requestId !== this.pendingShare || !this.launchReport) throw new Error('Share-card request expired. Export again.');
+            if (!this.pendingShare || m.requestId !== this.pendingShare) throw new Error('Share-card request expired. Export again.');
             this.pendingShare = undefined;
             const png = validateCardPng(m.data);
             if (await this.writeLaunchFile('png', png)) this.notice = 'PNG share card exported.';
@@ -232,6 +330,7 @@ class ShipStats implements vscode.Disposable {
     if (unique.length > 50) throw new Error('Track up to 50 products. Remove one before adding another.');
     await this.context.globalState.update('products', unique);
     this.products = unique;
+    this.releaseSuggestions=undefined;
     this.comparison = undefined;
     this.launchReport = undefined; this.launchReviewError = undefined; this.pendingShare = undefined;
     this.readings = this.readings.filter(r => unique.some(p => keyOf(p) === keyOf(r.product)));
@@ -263,10 +362,11 @@ class ShipStats implements vscode.Disposable {
     if (!uri) return false;
     await vscode.workspace.fs.writeFile(uri, bytes); return true;
   }
-  private async exportLaunch(format: unknown, metric: unknown): Promise<void> {
-    if (!this.launchReport) throw new Error('Generate a launch report first.');
+  private async exportLaunch(message: Record<string,unknown>): Promise<void> {
+    const format=message.format;
     if (format !== 'md' && format !== 'svg') throw new Error('Choose Markdown or SVG export.');
-    const text = format === 'md' ? launchMarkdown(this.launchReport) : shareCard(this.launchReport, metric);
+    if(format==='md' && !this.launchReport)throw new Error('Generate a launch report first.');
+    const text = format === 'md' ? launchMarkdown(this.launchReport!) : this.cardSvg(message);
     if (await this.writeLaunchFile(format, Buffer.from(text, 'utf8'))) this.notice = format === 'md' ? 'Launch report exported.' : 'SVG share card exported.';
   }
   async add(source?: Source): Promise<void> {
@@ -290,6 +390,17 @@ class ShipStats implements vscode.Disposable {
     void this.panel?.webview.postMessage({ type: 'navigate', page: 'overview' });
   }
   async refresh(): Promise<void> {
+    this.collection.lastAttemptAt=new Date().toISOString();this.collection.error=undefined;
+    try {
+      await this.collectRefresh();
+      const successes=this.readings.filter(r=>!r.error && r.metric && r.fetchedAt);
+      this.collection.successfulProducts=successes.length;
+      const latest=successes.map(r=>r.fetchedAt!).sort().at(-1);if(latest)this.collection.lastSuccessAt=latest;
+      const failed=this.readings.filter(r=>r.error).length;if(failed)this.collection.error=`${failed} source(s) failed. Review source health.`;
+    } catch(error) {this.collection.error=errorMessage(error);throw error;}
+    finally {await this.context.globalState.update(COLLECTION,this.collection);}
+  }
+  private async collectRefresh(): Promise<void> {
     this.comparison = undefined;
     this.launchReport = undefined; this.launchReviewError = undefined; this.pendingShare = undefined;
     const hasReddit = this.products.some(p => p.source === 'reddit');
@@ -347,10 +458,16 @@ class ShipStats implements vscode.Disposable {
   }
   private schedule(): void {
     if (this.timer) clearInterval(this.timer); this.timer = undefined;
+    if (this.backgroundTimer) clearInterval(this.backgroundTimer);this.backgroundTimer=undefined;
     const minutes = this.config().get<number>('refreshMinutes', 0);
     if (this.panel && Number.isFinite(minutes) && minutes > 0) this.timer = setInterval(() => {
       if (this.panel?.visible && !this.busy) void this.run(() => this.refresh());
     }, Math.max(5, Math.min(1440, minutes)) * 60000);
+    const collectionMinutes=this.config().get<number>('collectionMinutes',1440);
+    if(!this.config().get<boolean>('backgroundCollection',false))void this.collectorLease.release();
+    if(this.config().get<boolean>('backgroundCollection',false) && Number.isFinite(collectionMinutes))this.backgroundTimer=setInterval(()=>{
+      if(!this.disposed && !this.busy && this.products.length)void this.run(()=>this.collectInBackground(),true);
+    },Math.max(10,Math.min(1440,collectionMinutes))*60000);
   }
   private send(): void {
     if (!this.panel || this.disposed) return;
@@ -361,6 +478,11 @@ class ShipStats implements vscode.Disposable {
       history: this.history.entries(),
       insights: this.insights, comparison: this.comparison,
       launchReport: this.launchReport, launchReviewError: this.launchReviewError, monitoring: this.monitoring,
+      storage:storageHealth(this.products,this.history.entries(),this.insights,this.monitoring),
+      progress:progressSummary(this.products,this.readings,this.history.entries(),this.monitoring),
+      collection:{...this.collection,enabled:this.config().get<boolean>('backgroundCollection',false),minutes:this.config().get<number>('collectionMinutes',1440)},
+      releaseSuggestions:this.releaseSuggestions,
+      backupReview:this.pendingBackup ? {id:this.pendingBackup.id,createdAt:this.pendingBackup.data.createdAt,products:this.pendingBackup.data.products.length,snapshots:this.pendingBackup.data.history.length,groups:this.pendingBackup.data.insights.groups.length,markers:this.pendingBackup.data.insights.markers.length,rules:this.pendingBackup.data.monitoring.rules.length} : undefined,
       dateLimits: { start: dateAt(new Date(), -180), end: dateAt(new Date(), -1), today: dateAt(new Date(), 0) },
       discovery: this.discovery, busy: this.busy, notice: this.notice,
       discoveryKey: this.discoveryKey,
@@ -375,5 +497,5 @@ class ShipStats implements vscode.Disposable {
       <link rel="stylesheet" href="${asset('dashboard.css')}"><title>ShipStats</title></head><body>
       <main id="app" data-logo="${asset('shipstats-icon.png')}"></main><script nonce="${nonce}" src="${asset('dashboard.js')}"></script></body></html>`;
   }
-  dispose(): void { this.disposed = true; if (this.timer) clearInterval(this.timer); this.panel?.dispose(); this.disposables.forEach(d => d.dispose()); }
+  dispose(): void { this.disposed = true; if (this.timer) clearInterval(this.timer); if(this.backgroundTimer)clearInterval(this.backgroundTimer);void this.collectorLease.release();this.panel?.dispose(); this.disposables.forEach(d => d.dispose()); }
 }
